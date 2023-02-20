@@ -15,7 +15,7 @@ def survival_bonus():
 def control_penalty(tau):
     """Reward for using less control effort.
     """
-    return - np.linalg.norm(tau)
+    return - np.linalg.norm(tau)**2
 
 
 def ball_distance_penalty(pos_ball0, pos_ball1, diameter=0.075):

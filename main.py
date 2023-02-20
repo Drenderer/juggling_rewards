@@ -74,7 +74,7 @@ def pd_control(robot, q_des, dq_des):
 def reward_function(arm, ball0, ball1):
     reward =  1 * survival_bonus()
     reward += 0.05 * ball_distance_penalty(ball0.x, ball1.x)
-    reward += 0.01 * control_penalty(arm.tau)
+    reward += 0.0002 * control_penalty(arm.tau)
     return reward
 
 
