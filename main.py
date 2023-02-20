@@ -11,6 +11,7 @@ import numpy as np
 
 from policies import CubicMP, ConstantMP, PiecewiseMP
 from mujoco_environment import MjEnvironment, MjViewer, Arm, Ball
+from rewards import survival_bonus, ball_distance_penalty, control_penalty
 
 
 
@@ -55,7 +56,7 @@ def get_viwer(model, data):
     viewer.vopt.geomgroup[5] = False
     viewer._hide_menu = True
     viewer._run_speed = 1.0
-    viewer._run_speed = 0.1
+    # viewer._run_speed = 0.1
     viewer.cam.distance = 3.1
     viewer.cam.lookat[2] += 1.4
     viewer.cam.elevation = -15
@@ -70,6 +71,13 @@ def pd_control(robot, q_des, dq_des):
     return np.clip(tau, -MAX_CTRL, MAX_CTRL)
 
 
+def reward_function(arm, ball0, ball1):
+    reward =  1 * survival_bonus()
+    reward += 0.05 * ball_distance_penalty(ball0.x, ball1.x)
+    reward += 0.01 * control_penalty(arm.tau)
+    return reward
+
+
 def main():
     policy = get_policy()
 
@@ -82,6 +90,7 @@ def main():
     ball0 = Ball(model, data, 0)
     ball1 = Ball(model, data, 1)
 
+
     # reset env
     q, dq = policy(time=0)
     arm.q = q
@@ -93,16 +102,22 @@ def main():
     ball1.x = np.array([0.88, -0.1, 2.7])
 
     k = 0
-    while True:
+    cum_reward = 0
+    while env.time <= 10.0:
         q, dq = policy(k * DT)
         tau = pd_control(arm, q, dq)
+
+        reward = reward_function(arm, ball0, ball1)
+        cum_reward += reward
         arm.tau = tau
+
         env.step()
+
         env.render()
         k += 1
-        if k % 500 == 0:
-            print(f"{k * DT:.0f}sec, ~{k*DT*2:.0f} catches")
 
+        if k % 10 == 0:
+            print(f"{k * DT:.2f} sec, ~{np.floor(k*DT*2):.0f} catches, reward: {reward:.2f}, cum_reward: {cum_reward:.2f}")
 
 
 if __name__ == '__main__':

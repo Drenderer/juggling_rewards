@@ -560,6 +560,10 @@ class MjEnvironment(Environment):
         if self.viewer is not None:
             self.viewer.render()
 
+    @property
+    def time(self):
+        return self.data.time
+
 
 class Ball:
     def __init__(self, m: mj.MjModel, d: mj.MjData, ball_id: int):
