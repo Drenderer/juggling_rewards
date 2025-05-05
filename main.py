@@ -13,6 +13,11 @@ from policies import CubicMP, ConstantMP, PiecewiseMP
 from mujoco_environment import MjEnvironment, MjViewer, Arm, Ball
 from rewards import survival_bonus, ball_distance_penalty, control_penalty
 
+import matplotlib.pyplot as plt
+from misc import generate_aprbs
+import jax.random as jr
+from diffrax import LinearInterpolation
+import jax
 
 
 DT = 0.002
@@ -101,10 +106,32 @@ def main():
     ball0.x = arm.x + np.array([0.0, 0.0, 0.01])
     ball1.x = np.array([0.88, -0.1, 2.7])
 
+    # Defint the APRBS tau noise
+    key = jr.key(1)
+    ts = np.linspace(0, 10, 5000)
+    def get_noise(key):
+        noise = generate_aprbs(key, ts.size, num_jumps=10, initial_value=0.5)
+        noise = 0.5*(noise - 0.5)
+        return noise
+    noises = jax.vmap(get_noise)(jr.split(key, 4)).T
+    noise_interp = LinearInterpolation(ts, noises)
+    plt.plot(ts, noises)
+
+    @jax.jit
+    def interp_noise(t):
+        noise = noise_interp.evaluate(t)
+        return noise
+
     k = 0
     cum_reward = 0
+    ts = []
+    us = []
+    ys = []
+    ys_t = []
+    ys_tt = []
     while env.time <= 10.0:
         q, dq = policy(k * DT)
+        q += interp_noise(env.time)
         tau = pd_control(arm, q, dq)
 
         reward = reward_function(arm, ball0, ball1)
@@ -113,12 +140,30 @@ def main():
 
         env.step()
 
-        env.render()
+        # env.render()
         k += 1
 
-        if k % 10 == 0:
-            print(f"{k * DT:.2f} sec, ~{np.floor(k*DT*2):.0f} catches, reward: {reward:.2f}, cum_reward: {cum_reward:.2f}")
+        ts.append(env.time)
+        us.append(arm.tau)
+        ys.append(arm.q)
+        ys_t.append(arm.dq)
+        ys_tt.append(arm.ddq)
 
+        # if k % 10 == 0:
+            # print(f"{k * DT:.2f} sec, ~{np.floor(k*DT*2):.0f} catches, reward: {reward:.2f}, cum_reward: {cum_reward:.2f}")
+
+    ts = np.array(ts)
+    us = np.array(us)
+    ys = np.array(ys)
+    ys_t = np.array(ys_t)
+    ys_tt = np.array(ys_tt)
+    fig, axes = plt.subplots(2, 1)
+    axes[0].plot(ts, us)
+    axes[1].plot(ts, ys)
+    plt.show()
+
+    # Save the data
+    np.savez('juggle_data.npz', ts=ts, us=us, ys=ys, ys_t=ys_t, ys_tt=ys_tt)
 
 if __name__ == '__main__':
     main()

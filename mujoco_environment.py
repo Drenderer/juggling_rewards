@@ -434,7 +434,7 @@ class MjViewer:
         add_overlay(topleft, "Toggle geomgroup visibility", "0-4")
 
         add_overlay(bottomleft, "FPS", "%d%s" % (1 / self._time_per_render, ""))
-        add_overlay(bottomleft, "Solver iterations", str(self.data.solver_iter + 1))
+        add_overlay(bottomleft, "Solver iterations", str(self.data.solver_niter + 1))
         add_overlay(
             bottomleft, "Step", str(round(self.data.time / self.model.opt.timestep))
         )
