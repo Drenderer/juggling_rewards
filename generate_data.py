@@ -1,7 +1,6 @@
 """
-    Demonstrates some basic two ball juggling with a WAM arm.
-
-    mail@kaiploeger.net
+    This file generates data of the robot dynamics by randomly perturbing the policy and 
+    writing the motor moments and the joint angles (velocities and accelerations) to a file.
 """
 
 from pathlib import Path
@@ -18,9 +17,12 @@ from misc import generate_aprbs
 import jax.random as jr
 from diffrax import LinearInterpolation
 import jax
+import jax.numpy as jnp
+
+from typing import Callable
 
 
-DT = 0.002
+DT = 0.002  # Time step for the simulation
 XML_PATH = Path(__file__).parent / 'robot_description' / 'one_arm.xml'
 
 Kp  = np.array([200.0, 300.0, 100.0, 100.0])
@@ -76,25 +78,22 @@ def pd_control(robot, q_des, dq_des):
     return np.clip(tau, -MAX_CTRL, MAX_CTRL)
 
 
-def reward_function(arm, ball0, ball1):
-    reward =  1 * survival_bonus()
-    reward += 0.05 * ball_distance_penalty(ball0.x, ball1.x)
-    reward += 0.0002 * control_penalty(arm.tau)
-    return reward
+def generate_trajectory(noise: Callable, t_max: float, render=False):  
 
+    ts = []
+    us = []
+    ys = []
+    ys_t = []
+    ys_tt = []
 
-def main():
     policy = get_policy()
 
     model = mj.MjModel.from_xml_path(str(XML_PATH))
     data = mj.MjData(model)
-    viewer = get_viwer(model, data)
+    viewer = get_viwer(model, data) if render else None
     env = MjEnvironment(model, data, viewer)
 
     arm = Arm(model, data, 'wam')
-    ball0 = Ball(model, data, 0)
-    ball1 = Ball(model, data, 1)
-
 
     # reset env
     q, dq = policy(time=0)
@@ -102,46 +101,25 @@ def main():
     arm.dq = dq
     arm.tau = np.zeros(arm.num_dof)
 
+    ts.append(env.time)
+    us.append(arm.tau)
+    ys.append(arm.q)
+    ys_t.append(arm.dq)
+    ys_tt.append(arm.ddq)
+
     mj.mj_forward(model, data)
-    ball0.x = arm.x + np.array([0.0, 0.0, 0.01])
-    ball1.x = np.array([0.88, -0.1, 2.7])
-
-    # Defint the APRBS tau noise
-    key = jr.key(1)
-    ts = np.linspace(0, 10, 5000)
-    def get_noise(key):
-        noise = generate_aprbs(key, ts.size, num_jumps=10, initial_value=0.5)
-        noise = 0.5*(noise - 0.5)
-        return noise
-    noises = jax.vmap(get_noise)(jr.split(key, 4)).T
-    noise_interp = LinearInterpolation(ts, noises)
-    plt.plot(ts, noises)
-
-    @jax.jit
-    def interp_noise(t):
-        noise = noise_interp.evaluate(t)
-        return noise
-
-    k = 0
-    cum_reward = 0
-    ts = []
-    us = []
-    ys = []
-    ys_t = []
-    ys_tt = []
-    while env.time <= 10.0:
-        q, dq = policy(k * DT)
-        # q += interp_noise(env.time)
+    
+    while env.time <= t_max:
+        q, dq = policy(env.time)
+        q += noise(env.time)
         tau = pd_control(arm, q, dq)
 
-        reward = reward_function(arm, ball0, ball1)
-        cum_reward += reward
         arm.tau = tau
 
         env.step()
 
-        env.render()
-        k += 1
+        if render:
+            env.render()
 
         ts.append(env.time)
         us.append(arm.tau)
@@ -149,22 +127,85 @@ def main():
         ys_t.append(arm.dq)
         ys_tt.append(arm.ddq)
 
-        # if k % 10 == 0:
-            # print(f"{k * DT:.2f} sec, ~{np.floor(k*DT*2):.0f} catches, reward: {reward:.2f}, cum_reward: {cum_reward:.2f}")
 
     ts = np.array(ts)
     us = np.array(us)
     ys = np.array(ys)
     ys_t = np.array(ys_t)
     ys_tt = np.array(ys_tt)
+    
+    return ts, us, ys, ys_t, ys_tt
+    
+
+def get_abrbs(key, max_value, t_max:float, num_jumps:int=10):
+
+    # Define the APRBS tau noise
+    ts = np.linspace(0, 10, int(t_max/DT))
+    def get_noise(key):
+        noise = generate_aprbs(key, ts.size, num_jumps=10, initial_value=0.5)
+        noise = max_value*2*(noise - 0.5)
+        return noise
+    noises = jax.vmap(get_noise)(jr.split(key, 4)).T
+    noise_interp = LinearInterpolation(ts, noises)
+
+    @jax.jit
+    def interp_noise(t):
+        noise = noise_interp.evaluate(t)
+        return noise 
+    
+    return interp_noise
+
+def get_multisine(key, max_value:float, num_freqs:int=10, num_data=4):
+
+    freqs = jnp.arange(num_freqs)
+    sin_amplitudes = jr.normal(key, shape=(num_data, num_freqs)) / freqs.size
+    # cos_amplitudes = jr.normal(key, shape=(num_data, num_freqs)) / freqs.size
+
+    @jax.jit
+    def noise(t):
+        s = sin_amplitudes * jnp.sin(freqs * t)
+        # c = cos_amplitudes * jnp.cos(freqs * t)
+        return max_value * s.sum(axis=1) #+ c.sum(axis=1)
+
+    return noise
+
+
+def main():
+
+    t_max = 10.0
+    
+    key = jr.key(0)
+
+    ts = []
+    us = []
+    ys = []
+    ys_t = []
+    ys_tt = []
+    for noise_key in jr.split(key, 1):
+        # noise = get_noise(noise_key, max_value=0.25, t_max)
+        noise = get_multisine(noise_key, max_value=0.25)
+        _ts, _us, _ys, _ys_t, _ys_tt = generate_trajectory(noise, t_max, render=False)
+        ts.append(_ts)
+        us.append(_us)
+        ys.append(_ys)
+        ys_t.append(_ys_t)
+        ys_tt.append(_ys_tt)
+
+    ts = np.stack(ts, axis=0)
+    us = np.stack(us, axis=0)
+    ys = np.stack(ys, axis=0)
+    ys_t = np.stack(ys_t, axis=0)
+    ys_tt = np.stack(ys_tt, axis=0)
+
     fig, axes = plt.subplots(2, 1)
-    axes[0].plot(ts, us)
-    axes[1].plot(ts, ys)
+    n = 0
+    axes[0].plot(ts[n], us[n])
+    axes[1].plot(ts[n], ys[n])
     plt.show()
 
     # Save the data
     np.savez('juggle_data.npz', ts=ts, us=us, ys=ys, ys_t=ys_t, ys_tt=ys_tt)
 
+
 if __name__ == '__main__':
     main()
-
