@@ -178,33 +178,37 @@ def main():
 
     ts = []
     us = []
-    ys = []
-    ys_t = []
-    ys_tt = []
+    qs = []
+    qs_t = []
+    qs_tt = []
     for noise_key in jr.split(key, 1):
         # noise = get_noise(noise_key, max_value=0.25, t_max)
-        noise = get_multisine(noise_key, max_value=0.25)
-        _ts, _us, _ys, _ys_t, _ys_tt = generate_trajectory(noise, t_max, render=False)
+        noise = get_multisine(noise_key, max_value=0.5)
+        _ts, _us, _qs, _qs_t, _qs_tt = generate_trajectory(noise, t_max, render=True)
         ts.append(_ts)
         us.append(_us)
-        ys.append(_ys)
-        ys_t.append(_ys_t)
-        ys_tt.append(_ys_tt)
+        qs.append(_qs)
+        qs_t.append(_qs_t)
+        qs_tt.append(_qs_tt)
 
-    ts = np.stack(ts, axis=0)
+    # Check if all ts are equal
+    assert all([np.array_equal(ts[0], t) for t in ts[1:]]), "All ts should be equal"
+    ts = ts[0]
     us = np.stack(us, axis=0)
-    ys = np.stack(ys, axis=0)
-    ys_t = np.stack(ys_t, axis=0)
-    ys_tt = np.stack(ys_tt, axis=0)
+    qs = np.stack(qs, axis=0)
+    qs_t = np.stack(qs_t, axis=0)
+    qs_tt = np.stack(qs_tt, axis=0)
 
     fig, axes = plt.subplots(2, 1)
     n = 0
-    axes[0].plot(ts[n], us[n])
-    axes[1].plot(ts[n], ys[n])
+    axes[0].plot(ts, us[n])
+    axes[1].plot(ts, qs[n])
     plt.show()
 
+
+
     # Save the data
-    np.savez('juggle_data.npz', ts=ts, us=us, ys=ys, ys_t=ys_t, ys_tt=ys_tt)
+    # np.savez('juggle_data.npz', ts=ts, us=us, qs=qs, qs_t=qs_t, qs_tt=qs_tt)
 
 
 if __name__ == '__main__':
