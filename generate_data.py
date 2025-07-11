@@ -181,10 +181,13 @@ def main():
     qs = []
     qs_t = []
     qs_tt = []
-    for noise_key in jr.split(key, 1):
+    i=0
+    for  noise_key in jr.split(key, 50): # now we are building N different trajecetories
         # noise = get_noise(noise_key, max_value=0.25, t_max)
+        i=i+1
+        print(f"Generating trajectory {i}/50")
         noise = get_multisine(noise_key, max_value=0.5)
-        _ts, _us, _qs, _qs_t, _qs_tt = generate_trajectory(noise, t_max, render=True)
+        _ts, _us, _qs, _qs_t, _qs_tt = generate_trajectory(noise, t_max, render=False)
         ts.append(_ts)
         us.append(_us)
         qs.append(_qs)
@@ -199,16 +202,17 @@ def main():
     qs_t = np.stack(qs_t, axis=0)
     qs_tt = np.stack(qs_tt, axis=0)
 
-    fig, axes = plt.subplots(2, 1)
+    '''fig, axes = plt.subplots(2, 1)
     n = 0
     axes[0].plot(ts, us[n])
     axes[1].plot(ts, qs[n])
-    plt.show()
+    plt.show()'''
 
 
 
     # Save the data
-    # np.savez('juggle_data.npz', ts=ts, us=us, qs=qs, qs_t=qs_t, qs_tt=qs_tt)
+    np.savez('juggle_data.npz', ts=ts, us=us, qs=qs, qs_t=qs_t, qs_tt=qs_tt)
+    print("Trajectory generation complete. Data saved to 'juggle_data.npz'")
 
 
 if __name__ == '__main__':
