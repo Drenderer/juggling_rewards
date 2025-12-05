@@ -8,12 +8,13 @@ from pathlib import Path
 
 import mujoco as mj
 import numpy as np
-
+import time
 from policies import CubicMP, ConstantMP, PiecewiseMP
 from mujoco_environment import MjEnvironment, MjViewer, Arm, Ball
 from rewards import survival_bonus, ball_distance_penalty, control_penalty
 
 import matplotlib.pyplot as plt
+from dynax import bandlimited_noise
 from misc import generate_aprbs
 import jax.random as jr
 from diffrax import LinearInterpolation
@@ -21,6 +22,7 @@ import jax
 
 
 DT = 0.002 #simulation time step
+t_rest = int(0.1/DT)
 XML_PATH = Path(__file__).parent / 'robot_description' / 'one_arm.xml'
 
 #PD Controller Gains
@@ -30,39 +32,27 @@ MAX_CTRL = np.array([150.0, 125.0,  40.0,  60.0]) #Torque limits (actuator satur
 
 
 def get_policy():
-    # we have 4 joints angles and 5 different position for stroke (catching the balls)
+    
     q_via_stroke = np.array([[-0.1,  1.12,  0.        ,  1.28],
-                            [-0.1,  0.92,  0.        ,  1.0],
-                            [ 0.08, 1.12,  0.        ,  1.18],
-                            [ 0.115, 0.92,  0.        ,  1.0],
-                            [-0.08, 1.12,  0.        ,  1.18]])
-    #the velocity of at each stroke points should be zero ---> Come to a full stop
-    dq_via_stroke = np.zeros_like(q_via_stroke)
-    #We have 5 different joint configurations, and 4 time intervals between them: 
-    #for example from position 2 to 3 in strokes we have 0.5 - 0.1 = 0.4 seconds
-    #first stroke occurs at t=0
-    times_stroke = np.array([0.1, 0.5, 0.6, 1.0])
-
-    #After completing the full stroke sequence through all five stroke positions once
-    #the policy switches to looping continuously through the cyclic positions.
-    q_via_cyclic = np.array([[-0.08,  1.12, 0., 1.18],
-                            [-0.12,  0.92, 0., 1.0],
-                            [ 0.08,  1.12, 0., 1.18],
-                            [ 0.12,  0.92, 0., 1.0]])
-    dq_via_cyclic = np.zeros_like(q_via_cyclic)
-    # it defines the duration of one full cycle 
-    # for example from position 1 t0 2 in cyclic it should take 0.5 - 0.1 =0.4
-    times_cyclic = np.array([0.1, 0.5, 0.6, 1.0])
-
-    policy_wait = ConstantMP(pos=q_via_stroke[0], duration=0.1) #policy that holds the robot joints fixed at a constant position.
-    #creates a smooth cubic spline trajectory passing through stroke points , cyclic=False means: one-shot trajectory, not repeating.
+                            [+0.08,  0.92,  0.,  1.00]          # changing the target policy can help to have different throw
+                             ])
+    
+    
+    
+    dq_via_stroke = np.array([[0,  0,  0  ,  0],
+                            [0,  0,  0       ,  0          ]
+                            ])
+    
+    times_stroke = np.array([0.1])
+    
+    policy_wait = ConstantMP(pos=q_via_stroke[0], duration=t_rest*DT) #the original duration was 0.1
+    
     policy_stroke = CubicMP(q_via_stroke, dq_via_stroke, times_stroke, cyclic=False) 
-    policy_cyclic = CubicMP(q_via_cyclic, dq_via_cyclic, times_cyclic, cyclic=True)
-    #stitches these phases together so the robot performs the full juggling routine
-    policy = PiecewiseMP([policy_wait, policy_stroke, policy_cyclic]) 
+    policy_hold   = ConstantMP(pos=q_via_stroke[-1],     duration=5.0)
+    policy = PiecewiseMP([policy_wait, policy_stroke , policy_hold]) 
     return policy
 
-# MuJoCo visualizer for rendering the simulation.
+
 def get_viwer(model, data):
     viewer = MjViewer(model, data)
     viewer.vopt.geomgroup[0] = True
@@ -88,11 +78,46 @@ def pd_control(robot, q_des, dq_des):
     return np.clip(tau, -MAX_CTRL, MAX_CTRL)
 
 
-def reward_function(arm, ball0, ball1):
-    reward =  1 * survival_bonus()
-    reward += 0.05 * ball_distance_penalty(ball0.x, ball1.x)
-    reward += 0.0002 * control_penalty(arm.tau)
-    return reward
+def get_ball_contact_force(model, data, ball_body_id):
+    f1 = 0.0
+    f2 = 0.0
+    fn = 0.0
+    """Return max normal contact force on the ball for the current step."""
+    for i in range(data.ncon):
+        contact = data.contact[i]
+        b1 = model.geom_bodyid[contact.geom1]
+        b2 = model.geom_bodyid[contact.geom2]
+
+        if b1 == ball_body_id or b2 == ball_body_id:
+            f = np.zeros(6, dtype=np.float64)
+            mj.mj_contactForce(model, data, i, f)
+            if ((f[0]**2 +f[1] **2 + f[2]**2) > (fn**2 +f1 **2 + f2**2)):
+                if f[0] > 20 :
+                    fn = 20
+                else:
+                    fn = f[0]
+
+                f1 = f[1]
+                f2 = f[2]
+    return np.array([fn])
+
+
+
+
+def get_ball_contact(model, data, ball_body_id):
+    c=0
+    for i in range(data.ncon):
+        contact = data.contact[i]
+        b1 = model.geom_bodyid[contact.geom1]
+        b2 = model.geom_bodyid[contact.geom2]
+
+        if b1 == ball_body_id or b2 == ball_body_id:
+           c=c+1
+    if c>0:
+        return 1
+    else:
+        return 0 
+
 
 
 def main():
@@ -105,8 +130,9 @@ def main():
 
     arm = Arm(model, data, 'wam')
     ball0 = Ball(model, data, 0)
-    ball1 = Ball(model, data, 1)
-
+   
+    ball_body_id = mj.mj_name2id(model, mj.mjtObj.mjOBJ_BODY, "balls/ball0")
+    
 
     # reset env
     q, dq = policy(time=0)
@@ -116,69 +142,131 @@ def main():
 
     mj.mj_forward(model, data)
     ball0.x = arm.x + np.array([0.0, 0.0, 0.01])
-    ball1.x = np.array([0.88, -0.1, 2.7]) # 0.88 , -0.1 , 2.7
 
-    # Defint the APRBS tau noise
-    key = jr.key(33)  # key for 1 
+    key = jr.key(33)  
     ts = np.linspace(0, 10, 5000)
-    def get_noise(key):
-        noise = generate_aprbs(key, ts.size, num_jumps=10, initial_value=0.5)
-        noise = 0.5*(noise - 0.5)
-        return noise
-    noises = jax.vmap(get_noise)(jr.split(key, 4)).T
-    noise_interp = LinearInterpolation(ts, noises)
-    plt.plot(ts, noises)
 
-    @jax.jit
-    def interp_noise(t):
-        noise = noise_interp.evaluate(t)
-        return noise
+    seed = int(time.time()) 
+    key = jax.random.PRNGKey(seed)
+    noise1 = bandlimited_noise(key = key , length=5000 , max_freq=10 , dt =DT)
 
     k = 0
-    cum_reward = 0
     ts = []
     us = []
     ys = []
     ys_t = []
     ys_tt = []
-    while env.time <= 10.0:
+    ball_force=[]
+    ball_contact = []
+
+
+    while env.time <= 5.0:
         q, dq = policy(k * DT)
-        #q += interp_noise(env.time)
         tau = pd_control(arm, q, dq)
-
-        reward = reward_function(arm, ball0, ball1)
-        cum_reward += reward
-        arm.tau = tau
-
+        arm.tau = tau + 5* noise1[k]
+        ball0.record_state()
         env.step()
-
         env.render()
+    
+        contact_forces = get_ball_contact_force(model , data , ball_body_id)
+        contact = get_ball_contact(model , data , ball_body_id)
         k += 1
-
+    
         ts.append(env.time)
         us.append(arm.tau)
         ys.append(arm.q)
         ys_t.append(arm.dq)
         ys_tt.append(arm.ddq)
+        ball_force.append (contact_forces)
+        ball_contact.append (contact)
+        
 
-        # if k % 10 == 0:
-            # print(f"{k * DT:.2f} sec, ~{np.floor(k*DT*2):.0f} catches, reward: {reward:.2f}, cum_reward: {cum_reward:.2f}")
-
+    xb0, dxb0 = ball0.get_recording()
     ts = np.array(ts)
     us = np.array(us)
     ys = np.array(ys)
     ys_t = np.array(ys_t)
     ys_tt = np.array(ys_tt)
-    fig, axes = plt.subplots(2, 1)
-    axes[0].plot(ts, us)
-    axes[1].plot(ts, ys)
+    xb0 = np.array(xb0)
+    dxb0 = np.array(dxb0)
+    ball_force = np.array(ball_force)
+    ball_contact = np.array(ball_contact)
+    
+
+
+    idx_throw = np.where(ball_force[t_rest:] < 1e-04)[0]
+    flag = False
+    i=0
+    while flag == False:
+        if idx_throw[i+10] - idx_throw[i] ==10:
+            idx_throw = int(t_rest + idx_throw[i])
+            flag = True
+        i=i+1
+    print ("the time of throwing the ball is " , (idx_throw)* DT)
+
+
+
+
+    idx_floor = np.where(xb0[:, 2] - 0.038 < 1e-4)[0]
+    t_end = idx_floor[0]
+    print ("the time of the ball touch floor " , (idx_floor[0])* DT)
+
+
+
+
+    fig, axs = plt.subplots(3, 1, sharex=True)
+    labels = ["x [m]", "y [m]", "z [m]"]
+    for j, ax in enumerate(axs):
+        ax.plot(ts[:t_end], xb0[:t_end, j] ,'-')
+        ax.plot(ts[:t_end:50], xb0[:t_end:50, j], 'o')
+        ax.axvline(ts[idx_throw], linestyle='--', color = 'r' ,linewidth=1.5)
+        ax.set_ylabel(labels[j])
+        ax.grid(True)
+
+    axs[-1].set_xlabel("time [s]")
+    plt.tight_layout()
     plt.show()
 
-    # Save the data - will overwrite (delete and replace)
-    np.savez('juggle_data.npz', ts=ts, us=us, ys=ys, ys_t=ys_t, ys_tt=ys_tt)
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection="3d")
+    ax.plot(xb0[:t_end, 0], xb0[:t_end, 1], xb0[:t_end, 2])
+    ax.scatter(xb0[0, 0],      xb0[0, 1],      xb0[0, 2],      marker="o")  # start
+    ax.scatter(xb0[t_end-1,0], xb0[t_end-1,1], xb0[t_end-1,2], marker="x")  # end
+    ax.set_xlabel("x [m]")
+    ax.set_ylabel("y [m]")
+    ax.set_zlabel("z [m]")
+    ax.set_title("Ball 0 trajectory")
+    plt.tight_layout()
+    plt.show()
+
+
+    fig, ax = plt.subplots() 
+    ax.plot(ts, ball_force[:,0])
+    ax.axvline(ts[idx_throw], linestyle='--', color = 'r' ,linewidth=1.5)
+    ax.set_ylabel("fn (normal force)")
+    ax.set_xlabel("time [s]")
+    ax.grid(True)
+    plt.show()
+
+    fig, ax = plt.subplots() 
+    ax.plot(ts, ball_contact[:])
+    ax.axvline(ts[idx_throw], linestyle='--', color = 'r' ,linewidth=1.5)
+    ax.set_ylabel("contact")
+    ax.set_xlabel("time [s]")
+    ax.grid(True)
+    plt.show()
+
+
+
+    fig, axes = plt.subplots(3, 1)
+    axes[0].plot(ts[:idx_throw], us[:idx_throw])
+    axes[1].plot(ts[:idx_throw], ys[:idx_throw])
+    axes[2].plot(ts[:idx_throw] ,ys_t[:idx_throw])
+    plt.show()
+
+
 
 if __name__ == '__main__':
     main()
 
-# figure 1 is plots for noises
-# figure 2 has two plots for torque and trajecetory of arms degree 

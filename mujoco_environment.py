@@ -605,8 +605,8 @@ class Ball:
         self.data.mocap_pos[self.mocap.mocapid] = x
 
     def record_state(self):
-        self._xs_rec.append(self.x)
-        self._dxs_rec.append(self.dx)
+        self._xs_rec.append(self.x.copy())
+        self._dxs_rec.append(self.dx.copy())
 
     def get_recording(self) -> tuple[np.ndarray, np.ndarray]:
         return np.array(self._xs_rec), np.array(self._dxs_rec)
