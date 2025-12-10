@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-data_robot = np.load("Data/robot_throwing.npz")
+data_robot = np.load("Data/robot_throwing2.npz")
 time = data_robot['ts']
 robot_q = data_robot['qs']
 robot_dq = data_robot['qs_t']
@@ -13,7 +13,7 @@ robot_u = data_robot['us']
 
 print (time.shape,robot_q.shape , robot_ddq.shape , robot_u.shape)
 
-data_ball = np.load("Data/ball_throwing.npz")
+data_ball = np.load("Data/ball_throwing2.npz")
 ball_q = data_ball['ball_x']
 ball_dq = data_ball['ball_xt']
 ball_f = data_ball['f']
@@ -41,7 +41,7 @@ def hitting_ground(ball_q):
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%   
 idx1 = 1
-idx2 = 9
+idx2 = 7
 DT =0.002
 idx_throw1 = find_throwing(ball_f[idx1] , rest_time = 50)
 idx_throw2 = find_throwing(ball_f[idx2] , rest_time = 50)

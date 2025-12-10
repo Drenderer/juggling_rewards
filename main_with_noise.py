@@ -34,7 +34,7 @@ MAX_CTRL = np.array([150.0, 125.0,  40.0,  60.0]) #Torque limits (actuator satur
 def get_policy():
     
     q_via_stroke = np.array([[-0.1,  1.12,  0.        ,  1.28],
-                            [+0.08,  0.92,  0.,  1.00]          # changing the target policy can help to have different throw
+                            [+0.1,  0.92,  0.,  1.00]          # changing the target policy can help to have different throw
                              ])
     
     
