@@ -39,7 +39,7 @@ def build_dataset(time ,robot_q , robot_dq , robot_ddq , robot_u,
     robot_y , robot_t , ball_y , index = [] , [] , [] , []
     for i in range(N_total):
         idx = find_throwing(ball_f[i] , rest_time )
-        robot_data = np.concatenate([robot_q[i] , robot_dq[i] , robot_ddq[i] , robot_u[i]] , axis =-1)
+        #robot_data = np.concatenate([robot_q[i] , robot_dq[i] , robot_ddq[i] , robot_u[i]] , axis =-1)
         robot_data = robot_data [idx - window_size + 1 : idx + 1]             # cutting the last window_size steps for robot 
         ball_data = np.concatenate([ball_x[i] , ball_dx[i]], axis=-1)
         ball_data = ball_data[idx: idx + 10]
