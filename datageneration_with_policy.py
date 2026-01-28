@@ -12,12 +12,12 @@ from mujoco_environment import Arm , Ball , MjEnvironment
 DT = 0.002  # Time step for the simulation
 
 
-def generate_trajectory (t_max, perturbation, q1,q2,dq1,dq2, render = False):
+def generate_trajectory (t_max, perturbation, q11 , q12 , q21 , q22 , q41, q42, render = False):
 
     ts, ys, ys_t, ys_tt, us = [], [], [], [], []
     ball_x, ball_xt, f, c = [], [], [], []
 
-    policy = get_policy(q1,q2,dq1,dq2)
+    policy = get_policy(q11 , q12 , q21 , q22 , q41, q42)
 
     model = mj.MjModel.from_xml_path(str(XML_PATH))
     data = mj.MjData(model)
@@ -75,27 +75,35 @@ def generate_trajectory (t_max, perturbation, q1,q2,dq1,dq2, render = False):
     return ts , us , ys , ys_t , ys_tt, ball_x , ball_xt , f , c
 
 def main():
-    
+    t_max = 2.0
     key = jr.PRNGKey(0)
     key1 ,key2 , key3 , key4 = jr.split(key,4)
 
-    random_q1 = jr.uniform (key1 , shape=(10,) , minval = -0.2 , maxval= +0.12)
-    random_q2 = jr.uniform (key2 , shape=(10,) , minval = 0.82 , maxval= 1.12)
-    random_dq1 = jr.uniform (key3 , shape=(10,) , minval = -1 , maxval= +1)
-    random_dq2 = jr.uniform (key4 , shape=(10,) , minval = -1 , maxval= +1)
-    
-    t_max = 10.0
+    q11 = jnp.array([-0.5 , -0.3 , -0.1 , 0 , 0.1 , 0.3 , 0.5])
+    w1 = jnp.array([-0.3 , -0.2 , -0.1 , 0.1 , 0.2 , 0.3])
+    q21 = jnp.array([0.8 , 0.9 , 1 , 1.1 , 1.2 , 1.3])
+    w2 = jnp.array([ 0 , 0.1 ,0.15 , 0.2 , 0.25 , 0.3])
+    q41 = jnp.array([0.9 , 1 , 1.1 , 1.2 , 1.3 , 1.4])
+    w4 = jnp.array ([0.1 ,0.2 , 0.3 , 0.4 ,0.5])
+
+    Q11, W1, Q21, W2, Q41, W4 = jnp.meshgrid(q11, w1, q21, w2, q41, w4, indexing="ij")
+    P = jnp.stack([Q11, W1, Q21, W2, Q41, W4], axis=-1).reshape(-1, 6)
+    mask = (P[:,3] !=0) | (P[: ,5]>0.3)         #omiting all w2= 0 and w4=0.1 , 0.2 ,0.3
+    P = P[mask]
+    print (P.shape)
+
     key = jr.key(0)
     ts, ys, ys_t, ys_tt, us = [], [], [], [], []
     ball_x, ball_xt, f, c = [], [], [], []
     
-    number_trajectory = 10
+    number_trajectory = len(P)
     k=0
     for noise_key in jr.split (key , number_trajectory):
         perturb = bandlimited_noise ( key = noise_key , length = int(t_max/DT) , max_freq=10 , dt =DT)
-        print (random_q1[k] , random_q2[k], random_dq1[k] , random_dq2[k])
-        _ts , _us , _ys ,_ys_t , _ys_tt , _ball_x , _ball_xt , _f , _c = generate_trajectory (t_max , perturb , random_q1[k] , random_q2[k] , 
-                                                                                              random_dq1[k] , random_dq2[k] , render=False)
+        if k%100 == 0:
+            print (k)
+        _ts , _us , _ys ,_ys_t , _ys_tt , _ball_x , _ball_xt , _f , _c = generate_trajectory (t_max , perturb , P[k,0] , P[k,0] + P[k,1] , 
+                                                                                              P[k,2] , P[k,2] - P[k,3] , P[k,4] , P[k,4] - P[k,5], render=False)
         k=k+1
         ts.append(_ts)
         us.append(_us)
@@ -109,8 +117,8 @@ def main():
     
     assert all([np.array_equal(ts[0] ,t) for t in ts[1:]])
 
-    np.savez('Data/robot_throwing2.npz' , ts =ts ,us = us, qs = ys , qs_t = ys_t , qs_tt = ys_tt)
-    np.savez('Data/ball_throwing2.npz' , ts =ts ,ball_x = ball_x , ball_xt = ball_xt , f =f , c =c)
+    np.savez('Data/robot_throwing.npz' , ts =ts ,us = us, qs = ys , qs_t = ys_t , qs_tt = ys_tt)
+    np.savez('Data/ball_throwing.npz' , ts =ts ,ball_x = ball_x , ball_xt = ball_xt , f =f , c =c)
     print("Trajectory generation complete.")
 
 if __name__ == '__main__' :

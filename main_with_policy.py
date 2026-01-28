@@ -21,13 +21,13 @@ Kd  = np.array([  7.0,  15.0,   5.0,   2.5])
 MAX_CTRL = np.array([150.0, 125.0,  40.0,  60.0]) #
 
 
-def get_policy(q1 , q2 , dq1 , dq2):
+def get_policy(q11 , q12 , q21 , q22 , q41, q42):
     
-    q_via_stroke = np.array([[-0.1,  1.12,  0.        ,  1.28],
-                            [q1,  q2,  0.,  1.00]])
+    q_via_stroke = np.array([[q11,    q21,    0,  q41],
+                            [ q12,    q22,    0,  q42]])
     
     dq_via_stroke = np.array([[0,  0,  0  ,  0],
-                            [dq1,  dq2,  0,  0]])
+                            [0,  0,  0,  0]])
     
     times_stroke = np.array([0.1])
     
@@ -75,11 +75,7 @@ def get_ball_contact_force(model, data, ball_body_id):
             f = np.zeros(6, dtype=np.float64)
             mj.mj_contactForce(model, data, i, f)
             if ((f[0]**2 +f[1] **2 + f[2]**2) > (fn**2 +f1 **2 + f2**2)):
-                if f[0] > 20 :
-                    fn = 20
-                else:
-                    fn = f[0]
-
+                fn = f[0]
                 f1 = f[1]
                 f2 = f[2]
     return np.array([fn])
@@ -101,7 +97,7 @@ def get_ball_contact(model, data, ball_body_id):
 
 
 def main():
-    policy = get_policy(q1=-0.1906 , q2=1.1150 , dq1 = -0.8636, dq2=0.8599)
+    policy = get_policy(q11=0 , q12=-0.3, q21=1.4, q22=1.1, q41=1.2, q42=0.7)
     model = mj.MjModel.from_xml_path(str(XML_PATH))
     data = mj.MjData(model)
     viewer = get_viwer(model, data)
@@ -110,8 +106,20 @@ def main():
     arm = Arm(model, data, 'wam')
     ball0 = Ball(model, data, 0)
    
+    # find the ball_id and ball size
     ball_body_id = mj.mj_name2id(model, mj.mjtObj.mjOBJ_BODY, "balls/ball0")
-    
+    adr = model.body_geomadr[ball_body_id]
+    num = model.body_geomnum[ball_body_id]
+
+    print(f"Body '{"balls/ball0"}' (id={ball_body_id}) has {num} geoms")
+
+    for geom_id in range(adr, adr + num):
+        geom_name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_GEOM, geom_id)
+        geom_type = model.geom_type[geom_id]
+        geom_size = model.geom_size[geom_id].copy()   # (3,)
+        print(f"  geom_id={geom_id}, name={geom_name}, type={int(geom_type)}, size={geom_size}")
+
+
     # reset env
     q, dq = policy(time=0)
     arm.q = q
