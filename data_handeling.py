@@ -29,7 +29,7 @@ print (ball_x.shape , ball_dx.shape , ball_f.shape)
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 def build_dataset(time ,robot_q , robot_dq , robot_ddq , robot_u,
-                  ball_x , ball_dx , ball_f , window_size = 30 , rest_time =50):
+                  ball_x , ball_dx , ball_f , window_size = 60 , rest_time =50):
     """"
     return
     robot_y : (N , window_size , 16)      robot data [q ,dq , ddq , u] for last window size
@@ -41,23 +41,23 @@ def build_dataset(time ,robot_q , robot_dq , robot_ddq , robot_u,
     N_total, T, _ = robot_q.shape
     robot_y , robot_t , ball_y , index , contact = [] , [] , [] , [] , []
     for i in range(N_total):
+        if i%2 ==0:
+            idx = find_throwing(ball_f[i] , rest_time )
+            key, subkey = jr.split(key)
+            r = jr.randint(subkey, (), 0, 20)
+            robot_data = np.concatenate([robot_q[i] , robot_dq[i] , robot_ddq[i] , robot_u[i]] , axis =-1)
+            robot_data = robot_data [idx - window_size +r + 1 : idx + r + 1]             # cutting the last window_size steps for robot 
+            ball_data = np.concatenate([ball_x[i] , ball_dx[i]], axis=-1)
+            ball_data = ball_data[idx]
+            t = time[i , idx - window_size + r + 1 : idx + r + 1]
+            c = jnp.full((window_size,) , 0)
+            c = c.at[window_size - r - 1].set(1)
 
-        idx = find_throwing(ball_f[i] , rest_time )
-        key, subkey = jr.split(key)
-        r = jr.randint(subkey, (), 0, 20)
-        robot_data = np.concatenate([robot_q[i] , robot_dq[i] , robot_ddq[i] , robot_u[i]] , axis =-1)
-        robot_data = robot_data [idx - window_size +r + 1 : idx + r + 1]             # cutting the last window_size steps for robot 
-        ball_data = np.concatenate([ball_x[i] , ball_dx[i]], axis=-1)
-        ball_data = ball_data[idx]
-        t = time[i , idx - window_size + r + 1 : idx + r + 1]
-        c = jnp.full((window_size,) , 0)
-        c = c.at[window_size - r - 1].set(1)
-
-        contact.append(c)
-        robot_t.append(t)
-        robot_y.append(robot_data)
-        ball_y.append(ball_data)
-        index.append(idx)
+            contact.append(c)
+            robot_t.append(t)
+            robot_y.append(robot_data)
+            ball_y.append(ball_data)
+            index.append(idx)
     
     return robot_t, robot_y , ball_y , contact, index
 
@@ -85,6 +85,54 @@ plt.title("Distribution of throw time inside window")
 plt.grid(alpha=0.3)
 plt.tight_layout()
 plt.show()
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+def build_non_throwing(time ,robot_q , robot_dq , robot_ddq , robot_u,
+                  ball_x , ball_dx , ball_f , window_size = 60 , rest_time =50):
+    """"
+    return
+    robot_y : (N , window_size , 16)      robot data [q ,dq , ddq , u] for last window size
+    tobot_t :(N , window_size)            time of last window size
+    ball_y : (N , 10 , 6)                 ball position and velocity from t=T_throw until T_throw + 10
+    index : (N ,)                         time of throw
+    """
+    key = jr.PRNGKey(0)
+    N_total, T, _ = robot_q.shape
+    robot_non_y , robot_non_t , ball_non_y , index_non , contact_non = [] , [] , [] , [] , []
+    for i in range(N_total):
+        if i%5 == 0:
+            idx = find_throwing(ball_f[i] , rest_time )
+            key, subkey = jr.split(key)
+            r = 5
+            robot_data = np.concatenate([robot_q[i] , robot_dq[i] , robot_ddq[i] , robot_u[i]] , axis =-1)
+            robot_data = robot_data [idx - r - window_size +1 : idx - r +1]         
+            ball_data = np.concatenate([ball_x[i] , ball_dx[i]], axis=-1)
+            ball_data = ball_data[idx-r]
+            t = time[i ,idx - r - window_size +1 : idx - r +1] 
+            c = jnp.full((window_size,) , 0)
+
+            contact_non.append(c)
+            robot_non_t.append(t)
+            robot_non_y.append(robot_data)
+            ball_non_y.append(ball_data)
+            index_non.append(idx)
+    
+    return robot_non_t, robot_non_y , ball_non_y , contact_non, index_non
+
+    
+robot_non_t , robot_non_y , ball_non_y , contact_non, index_non = build_non_throwing(time,robot_q , robot_dq , robot_ddq , robot_u,ball_x , ball_dx , ball_f)
+contact_non = np.array(contact_non)
+robot_non_t = np.array(robot_non_t)
+robot_non_y = np.array(robot_non_y)
+ball_non_y = np.array(ball_non_y)
+index_non = np.array (index_non)
+
+print (robot_non_t.shape, robot_non_y.shape , ball_non_y.shape , contact_non.shape , index_non.shape)
+
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+np.savez ('Data/prepared_non_throwing.npz' , robot_t= robot_non_t ,robot_y = robot_non_y  , ball_y = ball_non_y ,contact = contact_non, index = index_non)
+
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 np.savez ('Data/prepared_data_with_time.npz' , robot_t= robot_t ,robot_y = robot_y  , ball_y = ball_y ,contact = contact, index = index)
