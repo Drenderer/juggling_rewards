@@ -1,4 +1,5 @@
 import jax
+import time
 import mujoco as mj
 import numpy as np
 from jax import numpy as jnp
@@ -12,12 +13,12 @@ from mujoco_environment import Arm , Ball , MjEnvironment
 DT = 0.002  # Time step for the simulation
 
 
-def generate_trajectory (t_max, perturbation, q11 , q12 , q21 , q22 , q41, q42, render = False):
+def generate_trajectory (t_max,q1 , q2 , q4, render = False):
 
     ts, ys, ys_t, ys_tt, us = [], [], [], [], []
     ball_x, ball_xt, f, c = [], [], [], []
 
-    policy = get_policy(q11 , q12 , q21 , q22 , q41, q42)
+    policy = get_policy(q1 ,q2 ,q4)
 
     model = mj.MjModel.from_xml_path(str(XML_PATH))
     data = mj.MjData(model)
@@ -42,7 +43,7 @@ def generate_trajectory (t_max, perturbation, q11 , q12 , q21 , q22 , q41, q42, 
 
         q , dq = policy(env.time)
         tau = pd_control(arm , q , dq)
-        arm.tau = tau #+5*perturbation[i]
+        arm.tau = tau 
         i = i+1
         ball0.record_state()
 
@@ -75,36 +76,31 @@ def generate_trajectory (t_max, perturbation, q11 , q12 , q21 , q22 , q41, q42, 
     return ts , us , ys , ys_t , ys_tt, ball_x , ball_xt , f , c
 
 def main():
-    t_max = 2.0
-    key = jr.PRNGKey(0)
-    key1 ,key2 , key3 , key4 = jr.split(key,4)
-
-    q11 = jnp.array([-0.5 , -0.3 , -0.1 , 0 , 0.1 , 0.3 , 0.5])
-    w1 = jnp.array([-0.3 , -0.2 , -0.1 , 0.1 , 0.2 , 0.3])
-    q21 = jnp.array([0.8 , 0.9 , 1 , 1.1 , 1.2 , 1.3])
-    w2 = jnp.array([ 0 , 0.1 ,0.15 , 0.2 , 0.25 , 0.3])
-    q41 = jnp.array([0.9 , 1 , 1.1 , 1.2 , 1.3 , 1.4])
-    w4 = jnp.array ([0.1 ,0.2 , 0.3 , 0.4 ,0.5])
-
-    Q11, W1, Q21, W2, Q41, W4 = jnp.meshgrid(q11, w1, q21, w2, q41, w4, indexing="ij")
-    P = jnp.stack([Q11, W1, Q21, W2, Q41, W4], axis=-1).reshape(-1, 6)
-    mask = (P[:,3] !=0) | (P[: ,5]>0.3)         #omiting all w2= 0 and w4=0.1 , 0.2 ,0.3
-    P = P[mask]
-    print (P.shape)
-
-    key = jr.key(0)
+    t_max = 3.0
+    seed = int(time.time())
     ts, ys, ys_t, ys_tt, us = [], [], [], [], []
     ball_x, ball_xt, f, c = [], [], [], []
     
-    number_trajectory = len(P)
-    k=0
-    for noise_key in jr.split (key , number_trajectory):
-        perturb = bandlimited_noise ( key = noise_key , length = int(t_max/DT) , max_freq=10 , dt =DT)
+    number_trajectory = 60000
+
+    for k in range (number_trajectory):
+        seed = int(time.time())
+        key = jr.PRNGKey(seed)
+        k1, k2, k3 = jr.split(key, 3)
+
+        q1 = jr.uniform(k1 , shape=(4,) , minval=-0.25 , maxval=0.25)
+        q2 = jr.uniform(k2 , shape=(4,) , minval= 0.5 , maxval=1.4)
+        q4 = jr.uniform(k3 , shape=(4,) , minval=0.5 , maxval=1.4)
+
+        q1 = np.round(q1, 3)
+        q2 = np.round(q2, 3)
+        q4 = np.round(q4, 3)
+
         if k%100 == 0:
             print (k)
-        _ts , _us , _ys ,_ys_t , _ys_tt , _ball_x , _ball_xt , _f , _c = generate_trajectory (t_max , perturb , P[k,0] , P[k,0] + P[k,1] , 
-                                                                                              P[k,2] , P[k,2] - P[k,3] , P[k,4] , P[k,4] - P[k,5], render=False)
-        k=k+1
+            print (q1)
+        _ts , _us , _ys ,_ys_t , _ys_tt , _ball_x , _ball_xt , _f , _c = generate_trajectory (t_max ,q1 , q2 , q4, render=False)
+        
         ts.append(_ts)
         us.append(_us)
         ys.append(_ys)
@@ -117,8 +113,8 @@ def main():
     
     assert all([np.array_equal(ts[0] ,t) for t in ts[1:]])
 
-    np.savez('Data/robot_throwing.npz' , ts =ts ,us = us, qs = ys , qs_t = ys_t , qs_tt = ys_tt)
-    np.savez('Data/ball_throwing.npz' , ts =ts ,ball_x = ball_x , ball_xt = ball_xt , f =f , c =c)
+    np.savez('Data/Initial_data/second dataset/robot_throwing.npz' , ts =ts ,us = us, qs = ys , qs_t = ys_t , qs_tt = ys_tt)
+    np.savez('Data/Initial_data/second dataset/ball_throwing.npz' , ts =ts ,ball_x = ball_x , ball_xt = ball_xt , f =f , c =c)
     print("Trajectory generation complete.")
 
 if __name__ == '__main__' :

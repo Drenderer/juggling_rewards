@@ -1,4 +1,0 @@
-#%%
-import jax
-print ("hello")
-# %%

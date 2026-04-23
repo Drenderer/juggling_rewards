@@ -69,8 +69,8 @@ class NODE(eqx.Module):
         self.input_size = input_size
         self.time_dependent = time_dependent
 
-        #in_size = state_size + input_size + time_dependent
-        in_size =  input_size + time_dependent
+        in_size = state_size + input_size + time_dependent
+        #in_size =  input_size + time_dependent
         out_size = state_size
         self.mlp = klax.nn.MLP(
             in_size,
@@ -101,8 +101,8 @@ class NODE(eqx.Module):
                 "Time t must not be None, since the model is time-dependent."
             )
             t = jnp.expand_dims(t, axis=0)
-            nn_input = jnp.concat([t, u], axis=0)
+            nn_input = jnp.concat([t,y, u], axis=0)
         else:
-            nn_input = jnp.concat([u], axis=0)
+            nn_input = jnp.concat([y,u], axis=0)
 
         return self.mlp(nn_input)

@@ -9,6 +9,8 @@ import matplotlib.pyplot as plt
 from dynax import bandlimited_noise
 import jax.random as jr
 import jax
+from jax import random as jr
+
 
 
 DT = 0.002 #simulation time step
@@ -20,16 +22,19 @@ Kp  = np.array([200.0, 300.0, 100.0, 100.0])
 Kd  = np.array([  7.0,  15.0,   5.0,   2.5])
 MAX_CTRL = np.array([150.0, 125.0,  40.0,  60.0]) #
 
-
-def get_policy(q11 , q12 , q21 , q22 , q41, q42):
+def get_policy(q1 , q2 , q4):                      
     
-    q_via_stroke = np.array([[q11,    q21,    0,  q41],
-                            [ q12,    q22,    0,  q42]])
+    q_via_stroke = np.array([[ q1[0] , q2[0] , 0 , q4[0]],
+                            [q1[1],  q2[1] , 0 , q4[1]],
+                            [q1[2],   q2[2],    0, q4[2]],
+                            [ q1[3],    q2[3],    0   , q4[3]]])
     
     dq_via_stroke = np.array([[0,  0,  0  ,  0],
-                            [0,  0,  0,  0]])
+                              [0,  0,  0  ,  0],
+                              [0,  0,  0  ,  0],
+                              [0,  0,  0,  0]])
     
-    times_stroke = np.array([0.1])
+    times_stroke = np.array([ 0.3 , 0.7 , 0.8])
     
     policy_wait = ConstantMP(pos=q_via_stroke[0], duration=t_rest*DT)   #the original duration was 0.1
     policy_stroke = CubicMP(q_via_stroke, dq_via_stroke, times_stroke, cyclic=False) 
@@ -97,7 +102,24 @@ def get_ball_contact(model, data, ball_body_id):
 
 
 def main():
-    policy = get_policy(q11=0 , q12=-0.3, q21=1.4, q22=1.1, q41=1.2, q42=0.7)
+    seed = int(time.time())
+    key = jr.PRNGKey(seed)
+    k1, k2, k3 = jr.split(key, 3)
+
+    q1 = jr.uniform(k1 , shape=(4,) , minval=-0.25 , maxval=0.25)
+    q2 = jr.uniform(k2 , shape=(4,) , minval= 0.5 , maxval=1.4)
+    q4 = jr.uniform(k3 , shape=(4,) , minval=0.5 , maxval=1.4)
+
+    q1 = np.round(q1, 3)
+    q2 = np.round(q2, 3)
+    q4 = np.round(q4, 3)
+
+    #q1 = np.array([-0.7 , -0.7 , 0.087 , -0.088])
+    #q2 = np.array([1.2 ,1.2 , 1.2 , 1.2])
+    #q4 = np.array([0.856 , 1.006 , 0.564 , 0.629])
+    
+    print (q1 , q2 , q4)
+    policy = get_policy(q1  , q2 , q4)
     model = mj.MjModel.from_xml_path(str(XML_PATH))
     data = mj.MjData(model)
     viewer = get_viwer(model, data)
@@ -111,13 +133,13 @@ def main():
     adr = model.body_geomadr[ball_body_id]
     num = model.body_geomnum[ball_body_id]
 
-    print(f"Body '{"balls/ball0"}' (id={ball_body_id}) has {num} geoms")
+    #print(f"Body '{"balls/ball0"}' (id={ball_body_id}) has {num} geoms")
 
     for geom_id in range(adr, adr + num):
         geom_name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_GEOM, geom_id)
         geom_type = model.geom_type[geom_id]
         geom_size = model.geom_size[geom_id].copy()   # (3,)
-        print(f"  geom_id={geom_id}, name={geom_name}, type={int(geom_type)}, size={geom_size}")
+        #print(f"  geom_id={geom_id}, name={geom_name}, type={int(geom_type)}, size={geom_size}")
 
 
     # reset env
@@ -132,10 +154,6 @@ def main():
     key = jr.key(33)  
     ts = np.linspace(0, 10, 5000)
 
-    seed = int(time.time()) 
-    key = jax.random.PRNGKey(seed)
-    noise1 = bandlimited_noise(key = key , length=5000 , max_freq=10 , dt =DT)
-
     k = 0
     ts ,us, ys, ys_t ,ys_tt = [],[],[],[],[]
     ball_force , ball_contact = [],[]
@@ -143,7 +161,7 @@ def main():
     while env.time <= 5.0:
         q, dq = policy(k * DT)
         tau = pd_control(arm, q, dq)
-        arm.tau = tau  #+ 5* noise1[k]
+        arm.tau = tau  
         ball0.record_state()
         env.step()
         env.render()
@@ -173,20 +191,23 @@ def main():
     ball_contact = np.array(ball_contact)
     
 
-    idx_throw = np.where(ball_force[t_rest:] < 1e-04)[0]
-    flag = False
-    i=0
-    while flag == False:
-        if idx_throw[i+10] - idx_throw[i] ==10:
-            idx_throw = int(t_rest + idx_throw[i])
-            flag = True
-        i=i+1
-    print ("the time of throwing the ball is " , (idx_throw)* DT)
-
-
-    idx_floor = np.where(xb0[:, 2] - 0.038 < 1e-4)[0]
-    t_end = idx_floor[0]
-    print ("the time of the ball touch floor " , (idx_floor[0])* DT)
+    idx_throw = np.where(ball_contact[t_rest:] == 0)[0]
+    idx=None
+    for i in range(len(idx_throw) - 100):
+        if idx_throw[i+100] - idx_throw[i] == 100:
+            idx = int(t_rest + idx_throw[i])
+            break
+    
+    if idx is not None:
+        print ("the time of throwing is" , idx*DT)
+        idx_floor = np.where(xb0[:, 2] - 0.038 < 1e-4)[0]
+        t_end = idx_floor[0]
+        print ("the time of the ball touch floor " , (idx_floor[0])* DT)
+        print ("average of contact befor idx of throw", np.mean(ball_contact[t_rest:idx]))
+    else:
+        print ("no throwing in this sample")
+        t_end = 2500
+        idx = 2500
 
 
     fig, axs = plt.subplots(3, 1, sharex=True)
@@ -194,7 +215,7 @@ def main():
     for j, ax in enumerate(axs):
         ax.plot(ts[:t_end], xb0[:t_end, j] ,'-')
         ax.plot(ts[:t_end:50], xb0[:t_end:50, j], 'o')
-        ax.axvline(ts[idx_throw], linestyle='--', color = 'r' ,linewidth=1.5)
+        ax.axvline(ts[idx], linestyle='--', color = 'r' ,linewidth=1.5)
         ax.set_ylabel(labels[j])
         ax.grid(True)
 
@@ -205,7 +226,7 @@ def main():
 
     fig, ax = plt.subplots() 
     ax.plot(ts, ball_force[:,0])
-    ax.axvline(ts[idx_throw], linestyle='--', color = 'r' ,linewidth=1.5)
+    ax.axvline(ts[idx], linestyle='--', color = 'r' ,linewidth=1.5)
     ax.set_ylabel("fn (normal force)")
     ax.set_xlabel("time [s]")
     ax.grid(True)
@@ -213,20 +234,19 @@ def main():
 
     fig, ax = plt.subplots() 
     ax.plot(ts, ball_contact[:])
-    ax.axvline(ts[idx_throw], linestyle='--', color = 'r' ,linewidth=1.5)
+    ax.axvline(ts[idx], linestyle='--', color = 'r' ,linewidth=1.5)
     ax.set_ylabel("contact")
     ax.set_xlabel("time [s]")
     ax.grid(True)
     plt.show()
 
     fig, axes = plt.subplots(3, 1)
-    axes[0].plot(ts[:idx_throw], us[:idx_throw])
-    axes[1].plot(ts[:idx_throw], ys[:idx_throw])
-    axes[2].plot(ts[:idx_throw] ,ys_t[:idx_throw])
+    axes[0].plot(ts[:idx], us[:idx])
+    axes[1].plot(ts[:idx], ys[:idx])
+    axes[2].plot(ts[:idx] ,ys_t[:idx])
     plt.show()
 
-
+    print ("ball velocity in z direction is :" , dxb0[idx , 2])
 
 if __name__ == '__main__':
     main()
-
