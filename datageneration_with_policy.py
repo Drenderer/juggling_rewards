@@ -13,12 +13,12 @@ from mujoco_environment import Arm , Ball , MjEnvironment
 DT = 0.002  # Time step for the simulation
 
 
-def generate_trajectory (t_max,q1 , q2 , q4, render = False):
+def generate_trajectory (t_max,q1 , q2 , q4, t, render = False):
 
     ts, ys, ys_t, ys_tt, us = [], [], [], [], []
     ball_x, ball_xt, f, c = [], [], [], []
 
-    policy = get_policy(q1 ,q2 ,q4)
+    policy = get_policy(q1 ,q2 ,q4,t)
 
     model = mj.MjModel.from_xml_path(str(XML_PATH))
     data = mj.MjData(model)
@@ -36,7 +36,8 @@ def generate_trajectory (t_max,q1 , q2 , q4, render = False):
     mj.mj_forward(model , data)
 
     ball0 = Ball (model , data , 0)
-    ball0.x = arm.x + np.array([0.0 , 0.0 ,0.01])
+    #ball0.x = arm.x + np.array([0.0 , 0.0 ,0.01])
+    ball0.x = arm.x + np.array([0.0 , 0.0 ,0.0])
     ball_body_id = mj.mj_name2id(model, mj.mjtObj.mjOBJ_BODY, "balls/ball0")
     i=0
     while env.time <=t_max:
@@ -81,25 +82,23 @@ def main():
     ts, ys, ys_t, ys_tt, us = [], [], [], [], []
     ball_x, ball_xt, f, c = [], [], [], []
     
-    number_trajectory = 60000
+    number_trajectory = 20000
 
     for k in range (number_trajectory):
         seed = int(time.time())
         key = jr.PRNGKey(seed)
-        k1, k2, k3 = jr.split(key, 3)
+        k1, k2, k3 ,k4 = jr.split(key, 4)
 
         q1 = jr.uniform(k1 , shape=(4,) , minval=-0.25 , maxval=0.25)
-        q2 = jr.uniform(k2 , shape=(4,) , minval= 0.5 , maxval=1.4)
-        q4 = jr.uniform(k3 , shape=(4,) , minval=0.5 , maxval=1.4)
+        q2 = jr.uniform(k2 , shape=(4,) , minval= 0.65 , maxval=1.45)
+        q4 = jr.uniform(k3 , shape=(4,) , minval=0.65 , maxval=1.45)
+        t = jr.uniform(k4, shape=(3,) , minval=0.1 , maxval=0.4 )
 
-        q1 = np.round(q1, 3)
-        q2 = np.round(q2, 3)
-        q4 = np.round(q4, 3)
 
         if k%100 == 0:
             print (k)
             print (q1)
-        _ts , _us , _ys ,_ys_t , _ys_tt , _ball_x , _ball_xt , _f , _c = generate_trajectory (t_max ,q1 , q2 , q4, render=False)
+        _ts , _us , _ys ,_ys_t , _ys_tt , _ball_x , _ball_xt , _f , _c = generate_trajectory (t_max ,q1 , q2 , q4,t, render=False)
         
         ts.append(_ts)
         us.append(_us)
@@ -113,8 +112,8 @@ def main():
     
     assert all([np.array_equal(ts[0] ,t) for t in ts[1:]])
 
-    np.savez('Data/Initial_data/second dataset/robot_throwing.npz' , ts =ts ,us = us, qs = ys , qs_t = ys_t , qs_tt = ys_tt)
-    np.savez('Data/Initial_data/second dataset/ball_throwing.npz' , ts =ts ,ball_x = ball_x , ball_xt = ball_xt , f =f , c =c)
+    np.savez('Data/Initial_data/third dataset/robot_throwing.npz' , ts =ts ,us = us, qs = ys , qs_t = ys_t , qs_tt = ys_tt)
+    np.savez('Data/Initial_data/third dataset/ball_throwing.npz' , ts =ts ,ball_x = ball_x , ball_xt = ball_xt , f =f , c =c)
     print("Trajectory generation complete.")
 
 if __name__ == '__main__' :

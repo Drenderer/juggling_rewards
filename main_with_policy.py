@@ -22,7 +22,7 @@ Kp  = np.array([200.0, 300.0, 100.0, 100.0])
 Kd  = np.array([  7.0,  15.0,   5.0,   2.5])
 MAX_CTRL = np.array([150.0, 125.0,  40.0,  60.0]) #
 
-def get_policy(q1 , q2 , q4):                      
+def get_policy(q1 , q2 , q4 , t):                      
     
     q_via_stroke = np.array([[ q1[0] , q2[0] , 0 , q4[0]],
                             [q1[1],  q2[1] , 0 , q4[1]],
@@ -33,8 +33,8 @@ def get_policy(q1 , q2 , q4):
                               [0,  0,  0  ,  0],
                               [0,  0,  0  ,  0],
                               [0,  0,  0,  0]])
-    
-    times_stroke = np.array([ 0.3 , 0.7 , 0.8])
+    t = t.at[0].set(t[0] + 0.1)
+    times_stroke = np.array([ t[0] , t[0] + t[1] , t[0] + t[1] + t[2]])
     
     policy_wait = ConstantMP(pos=q_via_stroke[0], duration=t_rest*DT)   #the original duration was 0.1
     policy_stroke = CubicMP(q_via_stroke, dq_via_stroke, times_stroke, cyclic=False) 
@@ -104,22 +104,24 @@ def get_ball_contact(model, data, ball_body_id):
 def main():
     seed = int(time.time())
     key = jr.PRNGKey(seed)
-    k1, k2, k3 = jr.split(key, 3)
+    k1, k2, k3 ,k4 = jr.split(key, 4)
 
     q1 = jr.uniform(k1 , shape=(4,) , minval=-0.25 , maxval=0.25)
-    q2 = jr.uniform(k2 , shape=(4,) , minval= 0.5 , maxval=1.4)
-    q4 = jr.uniform(k3 , shape=(4,) , minval=0.5 , maxval=1.4)
+    q2 = jr.uniform(k2 , shape=(4,) , minval= 0.65 , maxval=1.45)
+    q4 = jr.uniform(k3 , shape=(4,) , minval=0.65 , maxval=1.45)
+    t = jr.uniform(k4, shape=(3,) , minval=0.1 , maxval=0.4 )
 
-    q1 = np.round(q1, 3)
-    q2 = np.round(q2, 3)
-    q4 = np.round(q4, 3)
+    #q1 = np.round(q1, 3)
+    #q2 = np.round(q2, 3)
+    #q4 = np.round(q4, 3)
+    #t = np.round(t ,3)
 
     #q1 = np.array([-0.7 , -0.7 , 0.087 , -0.088])
     #q2 = np.array([1.2 ,1.2 , 1.2 , 1.2])
     #q4 = np.array([0.856 , 1.006 , 0.564 , 0.629])
     
-    print (q1 , q2 , q4)
-    policy = get_policy(q1  , q2 , q4)
+    print (q1 , q2 , q4 , t)
+    policy = get_policy(q1  , q2 , q4 , t)
     model = mj.MjModel.from_xml_path(str(XML_PATH))
     data = mj.MjData(model)
     viewer = get_viwer(model, data)
@@ -149,7 +151,8 @@ def main():
     arm.tau = np.zeros(arm.num_dof)
 
     mj.mj_forward(model, data)
-    ball0.x = arm.x + np.array([0.0, 0.0, 0.01])
+    #ball0.x = arm.x + np.array([0.0, 0.0, 0.01])
+    ball0.x = arm.x + np.array([0.0, 0.0, 0.0])
 
     key = jr.key(33)  
     ts = np.linspace(0, 10, 5000)
@@ -200,9 +203,9 @@ def main():
     
     if idx is not None:
         print ("the time of throwing is" , idx*DT)
-        idx_floor = np.where(xb0[:, 2] - 0.038 < 1e-4)[0]
-        t_end = idx_floor[0]
-        print ("the time of the ball touch floor " , (idx_floor[0])* DT)
+        idx_hit = np.where(ball_contact[idx+1:] == 1)[0]
+        t_end = int(idx +1 + idx_hit[0])
+        print ("the time of the ball touch floor or hit " , (t_end)* DT)
         print ("average of contact befor idx of throw", np.mean(ball_contact[t_rest:idx]))
     else:
         print ("no throwing in this sample")
@@ -214,7 +217,7 @@ def main():
     labels = ["x [m]", "y [m]", "z [m]"]
     for j, ax in enumerate(axs):
         ax.plot(ts[:t_end], xb0[:t_end, j] ,'-')
-        ax.plot(ts[:t_end:50], xb0[:t_end:50, j], 'o')
+        ax.plot(ts[:t_end:10], xb0[:t_end:10, j], 'o')
         ax.axvline(ts[idx], linestyle='--', color = 'r' ,linewidth=1.5)
         ax.set_ylabel(labels[j])
         ax.grid(True)

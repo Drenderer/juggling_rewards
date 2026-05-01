@@ -8,54 +8,41 @@ from jax import numpy as jnp
 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-data_robot = np.load("Data/clean_data/second dataset/robot_throwing.npz")
-time = data_robot['time'][::2,]
-robot_q = data_robot['robot_q'][::2,]
-robot_dq = data_robot['robot_dq'][::2,]
-robot_ddq = data_robot['robot_ddq'][::2,]
-robot_u = data_robot['robot_u'][::2,]
+data_robot = np.load("Data/clean_data/third dataset/robot_throwing_train.npz")
+time = data_robot['time']
+robot_q = data_robot['robot_q']
+robot_dq = data_robot['robot_dq']
+robot_ddq = data_robot['robot_ddq']
+robot_u = data_robot['robot_u']
 
 print (time.shape,robot_q.shape , robot_ddq.shape , robot_u.shape)
 
-data_ball = np.load("Data/clean_data/second dataset/ball_throwing.npz")
-ball_q = data_ball['ball_q'][::2,]
-ball_dq = data_ball['ball_dq'][::2,]
-ball_f = data_ball['ball_f'][::2,]
-ball_c = data_ball['ball_c'][::2,]
+data_ball = np.load("Data/clean_data/third dataset/ball_throwing_train.npz")
+ball_q = data_ball['ball_q']
+ball_dq = data_ball['ball_dq']
+ball_f = data_ball['ball_f']
+ball_c = data_ball['ball_c']
 
 
 print (ball_q.shape , ball_dq.shape , ball_f.shape)
 
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-N_total, T, _ = robot_q.shape
-s1 = jnp.array([0.8 , 0.1, 1.5])
-for idx in range(100):
-    idx_throw = find_throwing(ball_c[idx], rest_time=50)
-    state     = ball_q[idx, idx_throw, :3]
-    state_vel = ball_dq[idx, idx_throw, :3]
 
-    if jnp.allclose(state, s1, atol=1e-4):
-        print("idx =", idx)
-        print("state     =", state)
-        print("state_vel =", state_vel)
-        print()
-#%%
-print (idx)
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%   
-idx1 =427
-idx2 = 14600
+idx1 =18
+idx2 = 122
 DT =0.002
+#print (np.where(ball_c[idx2] == 1)[0])
 idx_throw1 = find_throwing(ball_c[idx1] , rest_time = 50)
 idx_throw2 = find_throwing(ball_c[idx2] , rest_time = 50)
 
-idx_hit1 = hitting(ball_q[idx1] , idx_throw1)
-idx_hit2 = hitting(ball_q[idx2] , idx_throw2)
+idx_hit1 = hitting(ball_c[idx1] , idx_throw1)
+idx_hit2 = hitting(ball_c[idx2] , idx_throw2)
 
 print ("throwing time for trajectory" , idx1 , "is" , idx_throw1*DT)
 print ("throwing time for trajectory" , idx2 , "is" , idx_throw2*DT)
 
-print ("hitting ground time for trajectory" , idx1 , "is" , idx_hit1*DT)
-print ("throwing time for trajectory" , idx2 , "is" , idx_hit2*DT)
+print ("hitting  time for trajectory" , idx1 , "is" , idx_hit1*DT)
+print ("hitting time for trajectory" , idx2 , "is" , idx_hit2*DT)
 
 # %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -77,12 +64,11 @@ for i in range (3):
 # %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 plt.figure()
-plt.plot(time[idx1,:1500] , ball_c[idx1, :1500] , lw=1.6 , label = f"ball contact idx ${idx1}$" , color = 'b')
-#plt.plot(time[idx2,:1500] , ball_c[idx2, :1500] , lw=1.6 , label = f"ball contact idx ${idx2}$" , color = 'r')
-plt.axvline(time[idx1,idx_throw1], linestyle='--', linewidth=1.0 , color='b')
-#plt.axvline(time[idx2,idx_throw2], linestyle='--', linewidth=1.0 , color='r')
+plt.plot(time[idx2,:1500] , ball_c[idx2, :1500] , lw=1.6 , label = f"ball contact idx ${idx2}$" , color = 'r')
+plt.axvline(time[idx2,idx_throw2], linestyle='--', linewidth=1.0 , color='b')
+plt.axvline(time[idx2,idx_hit2], linestyle='--', linewidth=1.0 , color='b')
 plt.xlabel("t [s]")
-plt.ylabel(rf"$fn$")
+plt.ylabel(rf"$contact value$")
 plt.title("ball contact")
 plt.legend()
 plt.grid(True, alpha=0.3)
@@ -186,70 +172,76 @@ plt.grid(True)
 plt.tight_layout()
 plt.show()
 
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-distance_at_100 = all_distances[:, 99]   # exactly 100 steps before throw
 
-bad_rows = jnp.where(distance_at_100 > 0.1)[0]   # rows inside all_distances
-bad_samples = valid_indices[bad_rows]            # original dataset sample ids
-
-print("rows in all_distances:", bad_rows)
-print("original sample indices:", bad_samples)
-
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-robot_x = []
-idx = 8070
-idx_throw = find_throwing(ball_c[idx] , rest_time = 50)
-idx_hit = hitting(ball_q[idx] , idx_throw)
-for k in range(T):
-    q = robot_q[idx , k , :]
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+def fk_position(q):
     matrix = Forward_kinematic(q)
-    x = matrix[0,3]
-    y = matrix[1,3]
-    z = matrix[2,3]
-    position = jnp.array([x,y,z])
-    robot_x.append(position)
+    return matrix[:3, 3]
 
-robot_x  =jnp.array(robot_x)
+jac_fn = jax.jacobian(fk_position)
 
+def compute_velocity(q, dq):
+    J = jac_fn(q)
+    return J @ dq
+
+def full_state(q , dq):
+
+    pos = jax.vmap(jax.vmap(fk_position))(q)                 # (N, T, 3)
+    vel = jax.vmap(jax.vmap(compute_velocity))(q, dq)        # (N, T, 3)
+    return jnp.concatenate([pos , vel] , axis =-1)
+
+robot_x = full_state(robot_q , robot_dq)
 
 # %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
+idx =122
+step = 10
+idx_throw = find_throwing(ball_c[idx] , rest_time = 50)
 for i in range (3):
     plt.figure()
     plt.plot(time[idx,:idx_throw] , ball_q[idx, :idx_throw,i] , lw=1.6 , label = f"ball position idx ${idx}$" , color = 'b')
-    plt.plot(time[idx,:idx_throw] , robot_x[ :idx_throw,i] , lw=1.6 , label = f"robot cup position ${idx}$" , color ='r')
-    plt.plot(time[idx, idx_throw-20],ball_q[idx, idx_throw-20, i],'ob', markersize=4)
-    plt.plot(time[idx, idx_throw],ball_q[idx, idx_throw, i],'ob', markersize=4)
-    plt.plot(time[idx, idx_throw-20:idx_throw],robot_x[ idx_throw-20:idx_throw, i],'or', markersize=4)
+    plt.plot(time[idx,:idx_throw] , robot_x[ idx, :idx_throw,i] , lw=1.6 , label = f"robot cup position ${idx}$" , color ='r')
+    plt.plot(time[idx, :idx_throw:step],ball_q[idx, :idx_throw:step, i],'ob', markersize=4)
+    plt.plot(time[idx, :idx_throw:step],robot_x[idx, :idx_throw:step, i],'or', markersize=4)
     plt.axvline(time[idx,idx_throw], linestyle='--', linewidth=1.0 , color='b')
-    labels = ["x [m]", "y [m]", "z [m]"]
+    labels = ["x [m]", "y [m]", "z [m]" , "Vx" , "Vy" , "Vz"]
     plt.xlabel("t [s]")
     plt.ylabel(labels[i])
-    plt.title("ball position")
+    plt.title("ball states")
     plt.legend()
     plt.grid(True, alpha=0.3)
+
 
 # %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 print ("ïnitial values")
 print (ball_q[idx ,0,:])
-print (robot_x[0,:])
+print (robot_x[idx,0,:])
 
 print ("100 steps before throw values")
 print (ball_q[idx ,idx_throw-100,:])
-print (robot_x[idx_throw-100,:])
+print (robot_x[idx,idx_throw-100,:])
 print ("error at throw time")
 
-print (jnp.abs (ball_q[idx ,idx_throw-100,:] - robot_x[idx_throw-100,:]))
-print(jnp.linalg.norm(ball_q[idx ,idx_throw-100,:] - robot_x[idx_throw-100,:]))
+print (jnp.abs (ball_q[idx ,idx_throw-100,:] - robot_x[idx,idx_throw-100,:]))
+print(jnp.linalg.norm(ball_q[idx ,idx_throw-100,:] - robot_x[idx, idx_throw-100,:]))
 # %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-plt.figure()
-plt.plot(time[idx,:1500] , ball_c[idx, :1500] , lw=1.6 , label = f"ball contact idx ${idx}$" , color = 'b')
-plt.axvline(time[idx,idx_throw], linestyle='--', linewidth=1.0 , color='b')
-plt.xlabel("t [s]")
-plt.ylabel(rf"$fn$")
-plt.title("ball contact")
+index_throwing = []
+for i in range (N_total):
+    throw = find_throwing(ball_c[i] , rest_time=50)
+    index_throwing.append(throw)
+
+index_throwing = jnp.array(index_throwing)
+
+plt.figure(figsize=(10, 5))
+bins = jnp.linspace(index_throwing.min(), index_throwing.max(), 100)
+plt.hist(index_throwing, bins=bins, color="tab:blue", alpha=0.7)
+plt.xlabel("throwing index")
+plt.ylabel("Number of samples")
+plt.title("Distribution of throwing index in dataset")
+plt.grid(alpha=0.3)
 plt.legend()
-plt.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.show()
 
-
+print(index_throwing.min())
+print(index_throwing.max())
 # %%

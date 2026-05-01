@@ -11,45 +11,60 @@ sys.path.append("..")
 from helping_function import  find_throwing , Forward_kinematic
 from normalize import Normalization, coefficients
 
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%import train Dataset
 base_path = Path(__file__).resolve().parent
-data_path = base_path.parent / "Data/clean_data/second dataset/robot_throwing.npz"
-data_robot = np.load(data_path)
-time = data_robot['time']
-robot_q = data_robot['robot_q']
-robot_dq = data_robot['robot_dq']
-robot_ddq = data_robot['robot_ddq']
-robot_u = data_robot['robot_u']
+data_path = base_path.parent / "Data/clean_data/third dataset/robot_throwing_train.npz"
+data_train_robot = np.load(data_path)
+time_train = data_train_robot['time']
+robot_train_q = data_train_robot['robot_q']
+robot_train_dq = data_train_robot['robot_dq']
+robot_train_ddq = data_train_robot['robot_ddq']
+robot_train_u = data_train_robot['robot_u']
 
-print (time.shape,robot_q.shape , robot_ddq.shape , robot_u.shape)
+print (time_train.shape,robot_train_q.shape , robot_train_ddq.shape , robot_train_u.shape)
 
 
 base_path = Path(__file__).resolve().parent
-data_path = base_path.parent / "Data/clean_data/second dataset/ball_throwing.npz"
-data_ball = np.load(data_path)
+data_path = base_path.parent / "Data/clean_data/third dataset/ball_throwing_train.npz"
+data_train_ball = np.load(data_path)
 
-ball_x = data_ball['ball_q']
-ball_dx = data_ball['ball_dq']
-ball_f = data_ball['ball_f']
-ball_c = data_ball['ball_c']
+ball_train_x = data_train_ball['ball_q']
+ball_train_dx = data_train_ball['ball_dq']
+ball_train_f = data_train_ball['ball_f']
+ball_train_c = data_train_ball['ball_c']
 
 
-print (ball_x.shape , ball_dx.shape , ball_f.shape)
+print (ball_train_x.shape , ball_train_dx.shape , ball_train_f.shape)
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%import test Dataset
+base_path = Path(__file__).resolve().parent
+data_path = base_path.parent / "Data/clean_data/third dataset/robot_throwing_test.npz"
+data_test_robot = np.load(data_path)
+time_test = data_test_robot['time']
+robot_test_q = data_test_robot['robot_q']
+robot_test_dq = data_test_robot['robot_dq']
+robot_test_ddq = data_test_robot['robot_ddq']
+robot_test_u = data_test_robot['robot_u']
+
+print (time_test.shape,robot_test_q.shape , robot_test_ddq.shape , robot_test_u.shape)
+
+
+base_path = Path(__file__).resolve().parent
+data_path = base_path.parent / "Data/clean_data/third dataset/ball_throwing_test.npz"
+data_test_ball = np.load(data_path)
+
+ball_test_x = data_test_ball['ball_q']
+ball_test_dx = data_test_ball['ball_dq']
+ball_test_f = data_test_ball['ball_f']
+ball_test_c = data_test_ball['ball_c']
+
+
+print (ball_test_x.shape , ball_test_dx.shape , ball_test_f.shape)
 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 def prepare_dataset_position(time ,robot_q , robot_dq , robot_ddq , robot_u,
                   ball_x , ball_dx , ball_c , step=2 , window_size = 20 , rest_time =50):
-    """"
-    this function build dataset for training state_less NODE which can predict only position
-
-
-    return
-    robot_y : (N , window_size , 16)      robot data [q ,dq , ddq , u] for last window size
-    tobot_t :(N , window_size)            time of last window size
-    ball_y : (N , 6)                      ball position and velocity from t=T_throw 
-    index : (N ,)                         time of throw
-    """
 
     key = jr.PRNGKey(0)
     N_total, T, _ = robot_q.shape
@@ -62,13 +77,6 @@ def prepare_dataset_position(time ,robot_q , robot_dq , robot_ddq , robot_u,
         ball_data = np.concatenate([ball_x[i] , ball_dx[i]], axis=-1)
         ball_data = ball_data[idx - window_size + 1 : idx  + 1]
         t = time[i , idx - window_size  + 1 : idx + 1]
-        
-        #build dilated indices
-        #offsets = np.arange(window_size)[::-1] * step
-        #indices = idx - offsets
-        #robot_data = robot_data[indices]
-        #ball_data = ball_data[indices]
-        #t = time[i, indices]
 
         
         robot_t.append(t)
@@ -79,42 +87,32 @@ def prepare_dataset_position(time ,robot_q , robot_dq , robot_ddq , robot_u,
     return robot_t, robot_y , ball_y , index
 
     
-robot_t , robot_y , ball_y, index = prepare_dataset_position(time,robot_q , robot_dq , robot_ddq 
-                                                             , robot_u,ball_x , ball_dx , ball_c)
-robot_t = np.array(robot_t)
-robot_y = np.array(robot_y)
-ball_y = np.array(ball_y)
-index = np.array (index)
-
-print (robot_t.shape, robot_y.shape , ball_y.shape , index.shape)
-
-
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-''''
-def _semi_flatten(x: Array) -> Array:
-            return x.reshape(-1, x.shape[-1])
+robot_train_t , robot_train_y , ball_train_y, index_train = prepare_dataset_position(time_train,robot_train_q , 
+                                                            robot_train_dq , 
+                                                            robot_train_ddq , robot_train_u,ball_train_x , 
+                                                            ball_train_dx , ball_train_c)
+robot_train_t = np.array(robot_train_t)
+robot_train_y = np.array(robot_train_y)
+ball_train_y = np.array(ball_train_y)
+index_train = np.array (index_train)
 
 
-mean_x = _semi_flatten(robot_y[:,:,0:4]).mean(axis=0)
-std_x = _semi_flatten(robot_y[:,:,0:4]).std(axis=0)
-std_dx = _semi_flatten(robot_y[:,:,4:8]).std(axis=0)
-std_ddx = _semi_flatten(robot_y[:,:,8:12]).std(axis=0)
-mean_u = _semi_flatten(robot_y[:,:,12:16]).mean(axis=0)
-std_u = _semi_flatten(robot_y[:,:,12:16]).std(axis=0)
+robot_test_t , robot_test_y , ball_test_y, index_test = prepare_dataset_position(time_test,robot_test_q , 
+                                                            robot_test_dq , 
+                                                            robot_test_ddq , robot_test_u,ball_test_x , 
+                                                            ball_test_dx , ball_test_c)
+robot_test_t = np.array(robot_test_t)
+robot_test_y = np.array(robot_test_y)
+ball_test_y = np.array(ball_test_y)
+index_test = np.array (index_test)
 
-alpha_x, tau_x , alpha_u = coefficients (mean_x , std_x , std_u ,std_dx , std_ddx)
 
-norm = Normalization (mean_q=mean_x, alpha_q=alpha_x, tau_q=tau_x,
-                      mean_u=mean_u, alpha_u=alpha_u)
+print (robot_train_t.shape, robot_train_y.shape , ball_train_y.shape , index_train.shape)
+print (robot_test_t.shape, robot_test_y.shape , ball_test_y.shape , index_test.shape)
 
-robot_y[:,:,0:4] = norm.transform_qs(robot_y[:,:,0:4])
-robot_y[:,:,4:8] = norm.transform_q_ts(robot_y[:,:,4:8])
-robot_y[:,:,8:12] = norm.transform_q_tts(robot_y[:,:,8:12])
-robot_y[:,:,12:16] = norm.transform_taus(robot_y[:,:,12:16])
-robot_t = norm.transform_ts(robot_t)
-'''
+robot_train_y = robot_train_y[: , : , :8]
+robot_test_y = robot_test_y[: , : , :8]
 
-robot_y = robot_y[: , : , :8]
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -180,45 +178,19 @@ def full_state(robot_data):
 
     return robot_x, coord
 
-robot_x, robot_coord = full_state(robot_y)
-print(robot_x.shape, robot_coord.shape)
+robot_train_x, robot_train_coord = full_state(robot_train_y)
+print(robot_train_x.shape, robot_train_coord.shape)
 
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-train_ratio = 0.8
-N = robot_y.shape[0]
-rng = np.random.default_rng(seed=42)   
-perm = rng.permutation(N)
-
-N_train = int(train_ratio * N)
-
-train_idx = perm[:N_train]
-test_idx  = perm[N_train:]
-
-robot_time_train = robot_t[train_idx]
-robot_train_q = robot_y[train_idx]
-robot_train_x = robot_x[train_idx]
-robot_train_coord = robot_coord[train_idx]
-ball_train  = ball_y[train_idx]
-index_train = index[train_idx]
-
-robot_time_test = robot_t[test_idx]
-robot_test_q = robot_y[test_idx]
-robot_test_x = robot_x[test_idx]
-robot_test_coord = robot_coord[test_idx]
-ball_test  = ball_y[test_idx]
-index_test = index[test_idx]
-
-print("Train:", robot_train_x.shape, ball_train.shape)
-print("Test :", robot_test_x.shape, ball_test.shape)
-
+robot_test_x, robot_test_coord = full_state(robot_test_y)
+print(robot_test_x.shape, robot_test_coord.shape)
 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-np.savez ('prepared_samples/train_data.npz' , robot_t= robot_time_train ,robot_q = robot_train_q , 
+np.savez ('prepared_samples/train_data.npz' , robot_t= robot_train_t ,robot_q = robot_train_q , 
                                             robot_x = robot_train_x , robot_coord = robot_train_coord,
-                                            ball_y = ball_train , index = index_train)
+                                            ball_y = ball_train_y , index = index_train)
 
-np.savez ('prepared_samples/test_data.npz' , robot_t= robot_time_test ,robot_q = robot_test_q , 
+np.savez ('prepared_samples/test_data.npz' , robot_t= robot_test_t ,robot_q = robot_test_q , 
                                             robot_x = robot_test_x , robot_coord = robot_test_coord,
-                                            ball_y = ball_test , index = index_test)
+                                            ball_y = ball_test_y , index = index_test)
 # %%

@@ -13,15 +13,16 @@ def find_throwing(ball_c , rest_time):
     return idx
 
 
-def hitting(ball_q , idx):
+def hitting(ball_c , idx):
     idx_hit=None
     if idx is not None:
-        idx_hit = np.where(ball_q[:, 2] - 0.038 < 1e-4)[0]
-    return idx_hit[0]
+        idx_hit = np.where(ball_c[idx+1:] == 1)[0]
+        t_end = int(idx +1 + idx_hit[0])
+    return t_end
 
 def hitting_ground(ball_q):
-    idx_hit = np.where(ball_q[:, 2] - 0.038 < 1e-4)[0]
-    return idx_hit[0]
+    hit_mask = ball_q[:, 2] - 0.038 < 1e-4
+    return jnp.argmax(hit_mask)
 
 def ball_free_flight_trajecotry (s0 , ts , gs=9.81):
     x0, y0, z0, vx0, vy0, vz0 = s0

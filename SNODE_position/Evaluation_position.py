@@ -89,14 +89,19 @@ class Model (eqx.Module):
             key=key2,
         )
 
-    def __call__(self , ts_robot , u_robot , ball):
-        #h0 = jnp.zeros((self.latent_dim,))    
-        h0 = self.encoder (ball) 
-        h = self.ode(ts_robot, h0, us=u_robot)  # (window_time, latent_dim)
-        #h_final = h[-1]
-        y_ball = jax.vmap(self.decoder)(h)      # (window_time, 6)
-        ball0 = self.decoder (self.encoder(ball))
-        return y_ball , ball0
+    def __call__(self, ts_robot, u_robot, ball):
+        h0 = self.encoder(ball)
+        h = self.ode(ts_robot, h0, us=u_robot)
+        y_ball = self.decoder(h[-1])
+        #y_ball = jax.vmap(self.decoder)(h)
+        ball0 = self.decoder(self.encoder(ball))
+        return y_ball, ball0
+
+    def encode_traj(self, ball_traj):
+        return jax.vmap(self.encoder)(ball_traj)
+
+    def decode_traj(self, h_traj):
+        return jax.vmap(self.decoder)(h_traj)
     
 
 latent_dim = 16
@@ -106,38 +111,41 @@ encoder = NODE(state_size=latent_dim, input_size=12, width_sizes=[64,64, 64], ke
 ode = ODESolver(encoder)
 model_template = Model(encoder, ode, latent_dim=latent_dim, key=key)
 
-model_loaded = eqx.tree_deserialise_leaves("trained_model_position9.eqx", model_template)
+model_loaded = eqx.tree_deserialise_leaves("trained_model_position11.eqx", model_template)
 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 model_ = klax.finalize(model_loaded)
 
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 DT = 0.002
 ts = jnp.arange(2500) * DT
 
-q_total_true , q_total_pred , total_true_time , total_pred_time = [] , [] , [] , []
-N_test = robot_test_x.shape[0]
+N_eval = 2000
 
-for idx in range (500):
-    if idx % 100 == 0:
-        print(idx)
-    pred ,init = model_(time_test[idx] ,robot_test_input[idx], ball_test[idx,0,:])
-    true = ball_test[idx , : , :]
-    q_true , true_time = ball_free_flight_trajecotry(true[-1,:] , ts)
-    q_pred , pred_time = ball_free_flight_trajecotry(pred[-1,:] , ts)
-
-    q_total_true.append(q_true)
-    q_total_pred.append(q_pred)
-    total_true_time.append(true_time)
-    total_pred_time.append(pred_time)
+time_eval = time_test[:N_eval]
+robot_eval = robot_test_input[:N_eval]
+ball0_eval = ball_test[:N_eval, 0, :]
+true_eval = ball_test[:N_eval, -1, :]
 
 
-q_total_true = jnp.array(q_total_true)
-q_total_pred = jnp.array(q_total_pred)
-total_true_time = jnp.array(total_true_time)
-total_pred_time = jnp.array(total_pred_time)
+def one_sample(time_i, robot_i, ball0_i, true_i):
+    pred_i, init_i = model_(time_i, robot_i, ball0_i)
 
+    q_true_i, true_time_i = ball_free_flight_trajecotry(true_i, ts)
+    q_pred_i, pred_time_i = ball_free_flight_trajecotry(pred_i, ts)
+
+    return q_true_i, q_pred_i, true_time_i, pred_time_i
+
+
+batched_eval = jax.jit(jax.vmap(one_sample, in_axes=(0, 0, 0, 0)))
+
+q_total_true, q_total_pred, total_true_time, total_pred_time = batched_eval(
+    time_eval,
+    robot_eval,
+    ball0_eval,
+    true_eval,
+)
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 error = []
@@ -235,19 +243,21 @@ indices = jnp.where(error > 4*D)[0]
 print (indices)
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-idx = 197
+idx = 3
 
 
-for i in range (3):
+for i in range (6):
     plt.figure()
-    plt.plot(ts[-20:] , ball_test[idx, :,i] , lw=1.6 , label = f"ball position idx ${idx}$" , color = 'b')
-    plt.plot(ts[-20:] , robot_test_x[ idx ,:,i] , lw=1.6 , label = f"robot cup position ${idx}$" , color ='r')
-    labels = ["x [m]", "y [m]", "z [m]"]
+    plt.plot(time_test[idx,-20:] , ball_test[idx, :,i] , lw=1.6 , label = f"ball state idx ${idx}$" , color = 'b')
+    plt.plot(time_test[idx,-20:]  , robot_test_x[ idx ,:,i] , lw=1.6 , label = f"robot cup state idx ${idx}$" , color ='r')
+    labels = ["x [m]", "y [m]", "z [m]" , "Vx" , "Vy" , "Vz"]
     plt.xlabel("t [s]")
     plt.ylabel(labels[i])
-    plt.title("ball position")
+    plt.title("ball-cup states before throw")
     plt.legend()
     plt.grid(True, alpha=0.3)
+
+
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 time = total_true_time[idx]
