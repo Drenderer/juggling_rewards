@@ -60,25 +60,50 @@ ball_test_c = data_test_ball['ball_c']
 
 
 print (ball_test_x.shape , ball_test_dx.shape , ball_test_f.shape)
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+def find_biggest_throw_index(ball_c, rest_time=50):
+    indices = []
 
+    for i in range(ball_c.shape[0]):
+        idx = find_throwing(ball_c[i], rest_time)
+        indices.append(idx)
+
+    return max(indices)
+
+max_train = find_biggest_throw_index(ball_train_c)
+max_test = find_biggest_throw_index(ball_test_c)
+
+print (max_train , max_test)
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 def prepare_dataset_position(time ,robot_q , robot_dq , robot_ddq , robot_u,
-                  ball_x , ball_dx , ball_c , step=2 , window_size = 20 , rest_time =50):
+                  ball_x , ball_dx , ball_c , step=10 , window_size = 84 , rest_time =50):
 
-    key = jr.PRNGKey(0)
     N_total, T, _ = robot_q.shape
     robot_y , robot_t , ball_y , index  = [] , [] , [] , []
     for i in range(N_total):
 
         idx = find_throwing(ball_c[i] , rest_time )
-        robot_data = np.concatenate([robot_q[i] , robot_dq[i] , robot_ddq[i] , robot_u[i]] , axis =-1)
-        robot_data = robot_data [idx - window_size + 1 : idx  + 1]             # cutting the last window_size steps for robot 
-        ball_data = np.concatenate([ball_x[i] , ball_dx[i]], axis=-1)
-        ball_data = ball_data[idx - window_size + 1 : idx  + 1]
-        t = time[i , idx - window_size  + 1 : idx + 1]
+        robot_full_data = np.concatenate([robot_q[i] , robot_dq[i] , robot_ddq[i] , robot_u[i]] , axis =-1) 
+        ball_full_data = np.concatenate([ball_x[i] , ball_dx[i]], axis=-1)
 
+        robot_dim = robot_full_data.shape[-1]
+        ball_dim = ball_full_data.shape[-1]
+
+        robot_data = np.zeros((window_size, robot_dim))
+        ball_data = np.zeros((window_size, ball_dim))
+        t = np.zeros((window_size,))
         
+        cell_throw = idx // step
+        sample_indices = idx - np.arange(cell_throw, -1, -1) * step
+        n_samples = len(sample_indices)
+
+        robot_data[:n_samples] = robot_full_data[sample_indices]
+        ball_data[:n_samples] = ball_full_data[sample_indices]
+        t[:n_samples] = time[i, sample_indices]
+
+    
+
         robot_t.append(t)
         robot_y.append(robot_data)
         ball_y.append(ball_data)
@@ -164,6 +189,9 @@ def full_state(robot_data):
     q = robot_data[:, :, :4]    # (N, T, 4)
     dq = robot_data[:, :, 4:8]  # (N, T, 4)
 
+    valid_mask = jnp.any(robot_data != 0, axis=-1, keepdims=True)  # (N,T,1)
+
+
     pos = jax.vmap(jax.vmap(fk_position))(q)                 # (N, T, 3)
     vel = jax.vmap(jax.vmap(compute_velocity))(q, dq)        # (N, T, 3)
 
@@ -176,6 +204,9 @@ def full_state(robot_data):
     coord = jnp.concatenate([nx, ny, nz, dnx, dny, dnz], axis=-1)   # (N, T, 18)
     robot_x = jnp.concatenate([pos, vel], axis=-1)                  # (N, T, 6)
 
+    robot_x = jnp.where(valid_mask, robot_x, 0.0)
+    coord = jnp.where(valid_mask, coord, 0.0)
+    
     return robot_x, coord
 
 robot_train_x, robot_train_coord = full_state(robot_train_y)
