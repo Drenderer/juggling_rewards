@@ -190,10 +190,10 @@ def full_state(q , dq):
     vel = jax.vmap(jax.vmap(compute_velocity))(q, dq)        # (N, T, 3)
     return jnp.concatenate([pos , vel] , axis =-1)
 
-robot_x = full_state(robot_q , robot_dq)
+robot_x = full_state(robot_q[:200] , robot_dq[:200])
 
 # %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-idx =122
+idx =103
 step = 10
 idx_throw = find_throwing(ball_c[idx] , rest_time = 50)
 for i in range (3):

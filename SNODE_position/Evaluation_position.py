@@ -125,17 +125,13 @@ class Model (eqx.Module):
             key=key2,
         )
 
-    def __call__(self, ts_robot, u_robot , mask):
+    def __call__(self, ts_robot, u_robot , ball0):
 
-        h0 = self.encoder(u_robot[0,:6])
+        h0 = self.encoder(ball0)
         ball0 = self.decoder(h0)
 
         h = self.ode(ts_robot, h0, us=u_robot)
 
-        last_valid_idx = jnp.sum(mask.astype(jnp.int32)) - 1
-        h_last_valid = h[last_valid_idx]
-
-        #y_ball = self.decoder(h_last_valid)
         y_ball = jax.vmap(self.decoder)(h)
 
     
@@ -150,7 +146,7 @@ encoder = NODE(state_size=latent_dim, input_size=12, width_sizes=[64,64, 64], ke
 ode = ODESolver(encoder)
 model_template = Model(encoder, ode, latent_dim=latent_dim, key=key)
 
-model_loaded = eqx.tree_deserialise_leaves("trained_model_position12.eqx", model_template)
+model_loaded = eqx.tree_deserialise_leaves("trained_model_position13.eqx", model_template)
 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -168,11 +164,12 @@ time_eval = time_test[:N_eval]
 robot_eval = robot_test_input[:N_eval]
 mask_eval = mask_test[:N_eval]
 ball_eval = ball_test[:N_eval]
+ball0_eval = ball_eval[: , 0 ,:]
 last_valid_eval = last_valid_idx[:N_eval]
 
 
-def one_sample(time_i, robot_i, mask_i, ball_i, throw_idx_i):
-    pred_traj_i, init_i = model_(time_i, robot_i, mask_i)
+def one_sample(time_i, robot_i, ball0_i, ball_i, throw_idx_i):
+    pred_traj_i, init_i = model_(time_i, robot_i, ball0_i)
 
     true_throw_i = ball_i[throw_idx_i, :]
     pred_throw_i = pred_traj_i[throw_idx_i, :]
@@ -188,7 +185,7 @@ batched_eval = jax.jit(jax.vmap(one_sample, in_axes=(0, 0, 0, 0, 0)))
 q_total_true, q_total_pred, total_true_time, total_pred_time = batched_eval(
     time_eval,
     robot_eval,
-    mask_eval,
+    ball0_eval,
     ball_eval,
     last_valid_eval,
 )
