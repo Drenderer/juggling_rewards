@@ -112,17 +112,13 @@ class Model (eqx.Module):
             key=key2,
         )
 
-    def __call__(self, ts_robot, u_robot , mask):
+    def __call__(self, ts_robot, u_robot , ball_init):
 
-        h0 = self.encoder(u_robot[0,:6])
+        h0 = self.encoder(ball_init)
         ball0 = self.decoder(h0)
 
         h = self.ode(ts_robot, h0, us=u_robot)
 
-        last_valid_idx = jnp.sum(mask.astype(jnp.int32)) - 1
-        h_last_valid = h[last_valid_idx]
-
-        #y_ball = self.decoder(h_last_valid)
         y_ball = jax.vmap(self.decoder)(h)
 
     
@@ -135,10 +131,6 @@ key = jr.key(0)
 nn = NODE(state_size=latent_dim , input_size=12, width_sizes=[64,64,64], key=key)
 ode = ODESolver(nn)
 model = Model(nn, ode, latent_dim=latent_dim , key=key)
-
-
-#time_train = robot_time_train - robot_time_train[:, -1][:, None]  # [ ... , -2DT , -DT , 0.000] for each sample
-#time_test = robot_time_test - robot_time_test[:, -1][:, None]
 
 def make_time_throw_zero(robot_time, mask):
     """
@@ -177,17 +169,19 @@ time_train = make_time_throw_zero(robot_time_train, mask_train)
 time_test  = make_time_throw_zero(robot_time_test, mask_test)
 
 
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+@klax.loss
 def loss_Trajectory(model , data, batch_axis):
     robot_ts , robot_batch, mask_batch, ball_batch = data
-    
-    pred , init = jax.vmap(model , in_axes=(0,0,0))(robot_ts , robot_batch , mask_batch)
+    ball0 = ball_batch[:,0,:]
+    pred , init = jax.vmap(model , in_axes=(0,0,0))(robot_ts , robot_batch , ball0)
     mask = mask_batch[..., None]  # (B, T, 1)
     loss_pred = jnp.sum(mask * jnp.square(pred - ball_batch)) / (
         jnp.sum(mask) * ball_batch.shape[-1]
     )
-    loss_enc_dec = jnp.mean(jnp.square(init - robot_batch[:,0,:6]))
+    loss_enc_dec = jnp.mean(jnp.square(init - ball0))
     landa1 = 0.2
     return loss_pred + landa1 *loss_enc_dec 
 
@@ -197,10 +191,10 @@ model , hist_traj = klax.fit(
     model,
     (time_train, robot_train_input, mask_train , ball_train),
     validation_data=(time_test, robot_test_input,mask_test, ball_test),
-    batch_size=64,
+    batch_size=16,
     optimizer=optax.adam(3e-4),
-    loss_fn=loss_Trajectory,
-    steps=80000,
+    loss=loss_Trajectory,
+    steps=5000,
     key=jr.key(0)
 )
 
@@ -210,7 +204,7 @@ plt.show()
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 model_ = klax.finalize(model)
-idx = 421
+idx = 103
 pred_position , init = model_(time_test[idx] ,robot_test_input[idx] , mask_test[idx])
 
 # ---- find throw index
