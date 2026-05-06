@@ -1,0 +1,20 @@
+[project]
+name = "juggling-rewards"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "cyberplotstyle",
+    "dynax",
+    "ipykernel>=7.2.0",
+    "ipywidgets>=8.1.8",
+    "klax>=0.2.0",
+    "matplotlib>=3.10.9",
+    "mujoco>=3.8.0",
+    "tqdm>=4.67.3",
+]
+
+[tool.uv.sources]
+cyberplotstyle = { git = "https://github.com/Drenderer/cyberplotstyle.git", rev = "d1e70a7574f73c81744a438777faeadbd436c9b7" }
+dynax = { git = "https://github.com/Drenderer/dynax.git", rev = "228a16a4806307331654bf1a175a401835681917" }
