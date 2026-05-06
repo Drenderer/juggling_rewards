@@ -57,7 +57,7 @@ mask_test = jnp.any(robot_test_input != 0, axis=-1)
 print (robot_train_input.shape , mask_train.shape)
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-idx = 302  # choose sample
+idx = 302  # choose one sample 
 
 traj = robot_train_input[idx]   # shape (84, 12)
 
@@ -133,9 +133,6 @@ ode = ODESolver(nn)
 model = Model(nn, ode, latent_dim=latent_dim , key=key)
 
 
-#time_train = robot_time_train - robot_time_train[:, -1][:, None]  # [ ... , -2DT , -DT , 0.000] for each sample
-#time_test = robot_time_test - robot_time_test[:, -1][:, None]
-
 def make_time_throw_zero(robot_time, mask):
     """
     robot_time: (N, T)
@@ -153,18 +150,13 @@ def make_time_throw_zero(robot_time, mask):
 
     t_throw = robot_time[jnp.arange(N), last_valid_idx]
 
-    # real shifted time
     time_shifted = robot_time - t_throw[:, None]
-
-    # estimate dt from valid data
     dt = robot_time[:, 1] - robot_time[:, 0]
 
     grid = jnp.arange(T)[None, :]
 
-    # safe increasing time for padded part
     time_safe = (grid - last_valid_idx[:, None]) * dt[:, None]
 
-    # use real time for valid part, safe time for padding
     time_final = jnp.where(mask, time_shifted, time_safe)
 
     return time_final
@@ -172,96 +164,6 @@ def make_time_throw_zero(robot_time, mask):
 time_train = make_time_throw_zero(robot_time_train, mask_train)
 time_test  = make_time_throw_zero(robot_time_test, mask_test)
 
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-def build_derivative_dataset(robot_time, robot_input, mask, ball):
-    X_time_pair = []
-    X_robot_pair = []
-    X_ball = []
-    Y_ball_next = []
-
-    N, T, _ = ball.shape
-
-    for i in range(N):
-        if (i%1000 ==0):
-            print (i)
-        valid_idx = np.where(np.array(mask[i]))[0]
-
-        for k in valid_idx[:-1]:
-            if mask[i, k] and mask[i, k + 1]:
-
-                X_time_pair.append(
-                    jnp.array([robot_time[i, k], robot_time[i, k + 1]])
-                )
-
-                X_robot_pair.append(
-                    jnp.stack([robot_input[i, k], robot_input[i, k + 1]])
-                )
-
-                X_ball.append(ball[i, k])
-                Y_ball_next.append(ball[i, k + 1])
-
-    return (
-        jnp.array(X_time_pair),     # (M, 2)
-        jnp.array(X_robot_pair),    # (M, 2, 12)
-        jnp.array(X_ball),          # (M, 6)
-        jnp.array(Y_ball_next),     # (M, 6)
-    )
-
-deriv_time_train, deriv_robot_train, deriv_ball_train, deriv_next_train = build_derivative_dataset(
-    time_train,
-    robot_train_input,
-    mask_train,
-    ball_train,
-)
-
-deriv_time_test, deriv_robot_test, deriv_ball_test, deriv_next_test = build_derivative_dataset(
-    time_test,
-    robot_test_input,
-    mask_test,
-    ball_test,
-)
-
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-def loss_Derivative(model, data, batch_axis):
-    t_pair, robot_pair, ball_k, ball_next = data
-
-    pred_pair, init = jax.vmap(model, in_axes=(0, 0, 0))(
-        t_pair,
-        robot_pair,
-        ball_k,
-    )
-
-    pred_next = pred_pair[:, -1, :]
-
-    loss_next = jnp.mean(jnp.square(pred_next - ball_next))
-    loss_init = jnp.mean(jnp.square(init - ball_k))
-
-    return loss_next + 0.2 * loss_init
-
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-model, hist_deriv = klax.fit(
-    model,
-    (
-        deriv_time_train,
-        deriv_robot_train,
-        deriv_ball_train,
-        deriv_next_train,
-    ),
-    validation_data=(
-        deriv_time_test,
-        deriv_robot_test,
-        deriv_ball_test,
-        deriv_next_test,
-    ),
-    batch_size=64,
-    optimizer=optax.adam(3e-4),
-    loss_fn=loss_Derivative,
-    steps=20000,
-    key=jr.key(0),
-)
-
-hist_deriv.plot()
-plt.show()
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 def loss_Trajectory(model , data, batch_axis):
@@ -277,21 +179,21 @@ def loss_Trajectory(model , data, batch_axis):
     return loss_pred + landa1 *loss_enc_dec 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-time = jnp.array([50,60, 80])
-for i in range(len(time)):
-    model , hist_traj = klax.fit(
-        model,
-        (time_train[: ,:time[i]], robot_train_input[: ,:time[i]], mask_train[: ,:time[i]] , ball_train[: ,:time[i]]),
-        validation_data=(time_test[:,:time[i]], robot_test_input[: ,:time[i]],mask_test[: ,:time[i]], ball_test[: ,:time[i]]),
-        batch_size=64,
-        optimizer=optax.adam(3e-4),
-        loss_fn=loss_Trajectory,
-        steps=5000,
-        key=jr.key(0)
-    )
 
-    hist_traj.plot()
-    plt.show()
+
+model , hist_traj = klax.fit(
+    model,
+    (time_train, robot_train_input, mask_train , ball_train),
+    validation_data=(time_test, robot_test_input,mask_test, ball_test),
+    batch_size=64,
+    optimizer=optax.adam(3e-4),
+    loss_fn=loss_Trajectory,
+    steps=80000,
+    key=jr.key(0)
+)
+
+hist_traj.plot()
+plt.show()
 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -304,7 +206,7 @@ last_valid_idx = jnp.sum(mask_test.astype(jnp.int32), axis=1) - 1
 throw_idx = int(last_valid_idx[idx])
 
 # ---- extract throw states
-true_traj = ball_test[idx]   # important
+true_traj = ball_test[idx]   
 true_throw = ball_test[idx, throw_idx, :]
 pred_throw = pred_position[throw_idx, :]
 
@@ -367,8 +269,6 @@ print ("error in z:" , error_z)
 error = jnp.sqrt (error_x**2 + error_y**2 + error_z**2)
 print ("distance error" , error)
 
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-eqx.tree_serialise_leaves("trained_model_position13.eqx", model_)
 
 
 # %%
