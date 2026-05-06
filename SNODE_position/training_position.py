@@ -132,7 +132,6 @@ nn = NODE(state_size=latent_dim , input_size=12, width_sizes=[64,64,64], key=key
 ode = ODESolver(nn)
 model = Model(nn, ode, latent_dim=latent_dim , key=key)
 
-
 def make_time_throw_zero(robot_time, mask):
     """
     robot_time: (N, T)
@@ -164,8 +163,84 @@ def make_time_throw_zero(robot_time, mask):
 time_train = make_time_throw_zero(robot_time_train, mask_train)
 time_test  = make_time_throw_zero(robot_time_test, mask_test)
 
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+def make_curriculum_weights(t: float, size: int, transition_width: float = 0.2):
+    """Generate adaptive temporal weights for trajectory fitting.
+
+    Computes weights w(tau):
+        tau<t: 1
+        tau>t+transition_width: 0
+        else: smooth cosine transition
+    for tau = linspace(0, 1, size)
+    Returns the normalized weights (softmax). 
+
+    Args:
+        t: Normalized training time as *positive* float. 
+            If t=0 then only the first `round(size * transition_width)` weights are non-zero.
+            If t>1 then all weights are equal.
+        size: Size of the output weights vector
+        transition_width: Ratio of the transition length to size. Defaults to 0.2.
+
+    Returns:
+        Normalized weight vector of size `size`.
+
+    """
+    ts = jnp.linspace(0, 1, size)
+
+    weights = jnp.where(
+        ts < t,
+        1.0,
+        jnp.where(
+            ts < t + transition_width,
+            0.5 + 0.5 * jnp.cos((ts - t) * jnp.pi / transition_width),
+            0.0,
+        ),
+    )
+    return jax.nn.softmax(weights)
+
+class RunStateUpdater(klax.Callback):
+    """Updates the run_state to be the training step."""
+    
+    def on_training_step(self, context):
+        context.state.run_state = context.state.step
+
+@klax.loss
+def curriculum_loss(model, batch, run_state):
+    robot_ts, robot_batch, mask_batch , ball_batch = batch
+    step = run_state
+    ball0 = ball_batch[:,0,:]
+    pred , init = jax.vmap(model , in_axes=(0,0,0))(robot_ts , robot_batch , ball0)
+    mask = mask_batch[..., None]  # (B, T, 1)
+
+    t_schedule = step / 5000
+    weights = make_curriculum_weights(t_schedule, robot_ts.shape[-1])
+
+    dynamic_loss_per_timestamp = jnp.sum(mask * jnp.square(pred - ball_batch), axis=(0, 2))
+    dynamic_loss = jnp.dot(weights, dynamic_loss_per_timestamp) / jnp.sum(mask)
+
+    landa1 = 0.2
+    loss_enc_dec = landa1 * jnp.mean(jnp.square(init - ball0))
+
+    return dynamic_loss + loss_enc_dec
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+w =make_curriculum_weights(1 , 84)
+plt.plot(w, label=f"t={t}")
+
+plt.xlabel("Trajectory time index")
+plt.ylabel("Weight")
+plt.title("Curriculum Weights")
+plt.legend()
+plt.grid(True)
+
+plt.show()
+print (robot_time_test.shape[-1])
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+''''
+@klax.loss
 def loss_Trajectory(model , data, batch_axis):
     robot_ts , robot_batch, mask_batch, ball_batch = data
     ball0 = ball_batch[:,0,:]
@@ -177,7 +252,7 @@ def loss_Trajectory(model , data, batch_axis):
     loss_enc_dec = jnp.mean(jnp.square(init - ball0))
     landa1 = 0.2
     return loss_pred + landa1 *loss_enc_dec 
-
+'''
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 
@@ -185,10 +260,13 @@ model , hist_traj = klax.fit(
     model,
     (time_train, robot_train_input, mask_train , ball_train),
     validation_data=(time_test, robot_test_input,mask_test, ball_test),
-    batch_size=64,
+    run_state=0,
+    batch_size=32,
     optimizer=optax.adam(3e-4),
-    loss_fn=loss_Trajectory,
-    steps=80000,
+    loss=curriculum_loss,
+    steps=5000,
+    callbacks=[RunStateUpdater()],
+    log_every=1,
     key=jr.key(0)
 )
 
@@ -199,7 +277,7 @@ plt.show()
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 model_ = klax.finalize(model)
 idx = 103
-pred_position , init = model_(time_test[idx] ,robot_test_input[idx] , ball_test[idx ,0])
+pred_position , init = model_(time_test[idx] ,robot_test_input[idx] , ball_test[idx,0])
 
 # ---- find throw index
 last_valid_idx = jnp.sum(mask_test.astype(jnp.int32), axis=1) - 1
