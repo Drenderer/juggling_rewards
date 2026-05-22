@@ -14,11 +14,14 @@ def find_throwing(ball_c , rest_time):
 
 
 def hitting(ball_c , idx):
-    idx_hit=None
-    if idx is not None:
-        idx_hit = np.where(ball_c[idx+1:] == 1)[0]
-        t_end = int(idx +1 + idx_hit[0])
-    return t_end
+    if idx is None:
+        return None
+
+    idx_hit = np.where(ball_c[idx + 1:] == 1)[0]
+    if len(idx_hit) == 0:
+        return None
+
+    return int(idx + 1 + idx_hit[0])
 
 def hitting_ground(ball_q):
     hit_mask = ball_q[:, 2] - 0.038 < 1e-4

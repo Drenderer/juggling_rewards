@@ -6,7 +6,8 @@ import equinox as eqx
 from jax import numpy as jnp
 from jax import random as jr
 from jaxtyping import Array, PyTree
-from dynax import ODESolver
+from dynax import ODESolver , ISPHS , normalization_coefficients
+from klax.nn import MLP , ConstantMatrix ,ConstantSkewSymmetricMatrix , ConstantSPDMatrix
 import klax
 import sys
 from pathlib import Path
@@ -35,6 +36,25 @@ index_test = data['index'][:]
 print (robot_time_train.shape ,robot_train_q.shape , robot_train_x.shape ,
         robot_train_coord.shape,ball_train.shape , index_train.shape)
 
+#%%%%%%%%%%%%%%%%%%%% import norm data %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+data = np.load('prepared_samples/train_data_norm.npz')
+robot_time_train_norm = data['time']
+robot_train_input_norm = data['robot_norm']
+ball_train_norm = data['ball_norm']
+
+data = np.load('prepared_samples/test_data_norm.npz')
+robot_time_test_norm = data['time']
+robot_test_input_norm = data['robot_norm']
+ball_test_norm = data['ball_norm']
+
+data = np.load('prepared_samples/norm_value.npz')
+alpha = data['alpha']
+alpha_ball = data['alpha_ball']
+tau = data['tau']
+mean_y = data['mean_y']
+mean_ball = data['mean_ball']
+
+print (robot_time_train_norm.shape , robot_train_input_norm.shape)
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 coord_train_z = robot_train_coord [: , : , 6:9]
@@ -56,7 +76,22 @@ mask_test = jnp.any(robot_test_input != 0, axis=-1)
 
 print (robot_train_input.shape , mask_train.shape)
 
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+norm = Normalization(
+    mean_q=mean_y,
+    alpha_q=alpha,
+    tau_q=tau,
+    mean_u=jnp.zeros((1,)),
+    alpha_u=jnp.ones((1,))
+)
 
+ball_norm = Normalization(
+    mean_q=mean_ball,
+    alpha_q=alpha_ball,
+    tau_q=norm.tau_q,   # important: same time scale as robot
+    mean_u=jnp.zeros((1,)),
+    alpha_u=jnp.ones((1,))
+)
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 def make_time_throw_zero(robot_time, mask):
     """
@@ -91,8 +126,8 @@ def make_time_throw_zero(robot_time, mask):
 
     return time_final
 
-time_train = make_time_throw_zero(robot_time_train, mask_train)
-time_test  = make_time_throw_zero(robot_time_test, mask_test)
+time_train = make_time_throw_zero(robot_time_train_norm, mask_train)
+time_test  = make_time_throw_zero(robot_time_test_norm, mask_test)
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 class Model (eqx.Module):
@@ -125,17 +160,13 @@ class Model (eqx.Module):
             key=key2,
         )
 
-    def __call__(self, ts_robot, u_robot , mask):
+    def __call__(self, ts_robot, u_robot , ball_init):
 
-        h0 = self.encoder(u_robot[0,:6])
+        h0 = self.encoder(ball_init)
         ball0 = self.decoder(h0)
 
         h = self.ode(ts_robot, h0, us=u_robot)
 
-        last_valid_idx = jnp.sum(mask.astype(jnp.int32)) - 1
-        h_last_valid = h[last_valid_idx]
-
-        #y_ball = self.decoder(h_last_valid)
         y_ball = jax.vmap(self.decoder)(h)
 
     
@@ -145,12 +176,29 @@ class Model (eqx.Module):
 
 latent_dim = 16
 key = jr.key(0)
+key_h , key_G , key_R , key_J = jr.split(key, 4)
+#nn = NODE(state_size=latent_dim , input_size=12, width_sizes=[64,64,64], key=key)
 
-encoder = NODE(state_size=latent_dim, input_size=12, width_sizes=[64,64, 64], key=key)
-ode = ODESolver(encoder)
-model_template = Model(encoder, ode, latent_dim=latent_dim, key=key)
+class Bounded_Energy(eqx.Module):
+    mlp: eqx.nn.MLP
 
-model_loaded = eqx.tree_deserialise_leaves("trained_model_position12.eqx", model_template)
+    def __call__(self, h):
+        x = self.mlp(h)
+        return  jax.nn.softplus(x).squeeze() + (jnp.sum(h)**2)
+
+H = MLP(in_size=latent_dim , out_size=1 , width_sizes=[64,64,64] , key=key_h)
+J= ConstantSkewSymmetricMatrix((latent_dim,latent_dim) , key = key_J)
+R = ConstantSPDMatrix((latent_dim,latent_dim) , key = key_R)
+G = ConstantMatrix((latent_dim , 12) , key=key_G)
+
+H_bound = Bounded_Energy(H)
+nn = ISPHS(H_bound , J , R , G)
+
+
+ode = ODESolver(nn)
+model_template = Model(nn, ode, latent_dim=latent_dim , key=key)
+
+model_loaded = eqx.tree_deserialise_leaves("trained_model_position5.eqx", model_template)
 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -165,17 +213,26 @@ last_valid_idx = jnp.sum(mask_test.astype(jnp.int32), axis=1) - 1
 N_eval = 2000
 
 time_eval = time_test[:N_eval]
-robot_eval = robot_test_input[:N_eval]
-mask_eval = mask_test[:N_eval]
+robot_eval = robot_test_input_norm[:N_eval]
+#mask_eval = mask_test[:N_eval]
 ball_eval = ball_test[:N_eval]
+ball0_eval = ball_test_norm[:N_eval,0,:]
 last_valid_eval = last_valid_idx[:N_eval]
 
 
-def one_sample(time_i, robot_i, mask_i, ball_i, throw_idx_i):
-    pred_traj_i, init_i = model_(time_i, robot_i, mask_i)
+def one_sample(time_i, robot_i,ball0_i, ball_i, throw_idx_i):
+    pred_traj_i, init_i = model_(time_i, robot_i, ball0_i)
+
+    # ---- de- normalize the prediction
+    pred_x = ball_norm.inverse_transform_qs(pred_traj_i[..., 0:3])
+    pred_dx = ball_norm.inverse_transform_q_ts(pred_traj_i[..., 3:6])
+
+
+
+    pred_position = jnp.concatenate([pred_x , pred_dx]  , axis = -1)
 
     true_throw_i = ball_i[throw_idx_i, :]
-    pred_throw_i = pred_traj_i[throw_idx_i, :]
+    pred_throw_i = pred_position[throw_idx_i, :]
 
     q_true_i, true_time_i = ball_free_flight_trajecotry(true_throw_i, ts)
     q_pred_i, pred_time_i = ball_free_flight_trajecotry(pred_throw_i, ts)
@@ -188,7 +245,7 @@ batched_eval = jax.jit(jax.vmap(one_sample, in_axes=(0, 0, 0, 0, 0)))
 q_total_true, q_total_pred, total_true_time, total_pred_time = batched_eval(
     time_eval,
     robot_eval,
-    mask_eval,
+    ball0_eval,
     ball_eval,
     last_valid_eval,
 )
@@ -248,9 +305,9 @@ print(f"Percentage below R: {float(percentage_below):.2f}%")
 
 error0 = []
 for idx in range(2000):
-    error_x = jnp.abs(q_total_true[idx ,0 , 0] - q_total_pred[idx ,0 , 0]) 
-    error_y = jnp.abs(q_total_true[idx ,0, 1] - q_total_pred[idx ,0 , 1]) 
-    error_z = jnp.abs(q_total_true[idx ,0 , 2] - q_total_pred[idx ,0 , 2])
+    error_x = jnp.abs(q_total_true[idx ,0 , 0] - q_total_pred[idx ,0 ,0]) 
+    error_y = jnp.abs(q_total_true[idx ,0, 0] - q_total_pred[idx ,0 , 0]) 
+    error_z = jnp.abs(q_total_true[idx ,0 , 0] - q_total_pred[idx ,0 , 0])
 
     err0 = jnp.sqrt (error_x**2 + error_y**2 + error_z**2)
     error0. append(err0)
@@ -291,18 +348,25 @@ print ("bad ones" , indices_bad)
 indices_good = jnp.where(error<R/2)[0]
 print ("good ones" , indices_good)
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-idx = 1481
+idx = 360
 valid = mask_test[idx]
-pred_position , init = model_(time_test[idx] ,robot_test_input[idx] , mask_test[idx])
+pred_position_norm , init = model_(time_test[idx] ,robot_test_input_norm[idx] , ball_test_norm[idx ,0])
 labels = ["x", "y", "z", "vx", "vy", "vz"]
+
+pred_x = ball_norm.inverse_transform_qs(pred_position_norm[..., 0:3])
+pred_dx = ball_norm.inverse_transform_q_ts(pred_position_norm[..., 3:6])
+time_test_denorm = norm.inverse_transform_ts(time_test)
+
+
+pred_position = jnp.concatenate([pred_x , pred_dx]  , axis = -1)
 
 plt.figure(figsize=(12, 6))
 
 for i in range (6):
     plt.subplot(2, 3, i + 1)
-    plt.plot(time_test[idx,][valid] , ball_test[idx, :,i][valid] , lw=1.6 , label = "True ball " , color = 'g')
-    plt.plot(time_test[idx,][valid] , robot_test_x[ idx ,:,i][valid], lw=1.6 , label = "robot", color ='b')
-    plt.plot(time_test[idx][valid], pred_position[valid, i], label="pred ball" , color='r')
+    plt.plot(time_test_denorm[idx,][valid] , ball_test[idx, :,i][valid] , lw=1.6 , label = "True ball " , color = 'g')
+    plt.plot(time_test_denorm[idx,][valid] , robot_test_x[ idx ,:,i][valid], lw=1.6 , label = "robot", color ='b')
+    plt.plot(time_test_denorm[idx][valid], pred_position[valid, i], label="pred ball" , color='r')
     
     plt.xlabel("time [s]")
     plt.ylabel(labels[i])
@@ -342,12 +406,29 @@ error_z = jnp.abs(q_total_true[idx ,time , 2] - q_total_pred[idx ,time , 2])
 
 err_idx = jnp.sqrt (error_x**2 + error_y**2 + error_z**2)
 
-print ("error in x:" , error_x)
-print ("error in y:" , error_y)
-print ("error in z:" , error_z)
-print ("distance error" , err_idx)
+error_x0 = jnp.abs(q_total_true[idx ,0 , 0] - q_total_pred[idx ,0 , 0]) 
+error_y0 = jnp.abs(q_total_true[idx ,0, 1] - q_total_pred[idx ,0, 1]) 
+error_z0 = jnp.abs(q_total_true[idx ,0 , 2] - q_total_pred[idx ,0 , 2])
 
-# %%
-print (time)
-print (q_total_true[idx, 0 , :])
+error_dx0 = jnp.abs(q_total_true[idx ,0 , 3] - q_total_pred[idx ,0 , 3]) 
+error_dy0 = jnp.abs(q_total_true[idx ,0, 4] - q_total_pred[idx ,0, 4]) 
+error_dz0 = jnp.abs(q_total_true[idx ,0 , 5] - q_total_pred[idx ,0 , 5])
+
+err0_idx = jnp.sqrt (error_x0**2 + error_y0**2 + error_z0**2)
+
+print ("error0 in x:" , error_x0)
+print ("error0 in y:" , error_y0)
+print ("error0 in z:" , error_z0)
+print ("error0 in Vx:" , error_dx0)
+print ("error0 in Vy:" , error_dy0)
+print ("error0 in Vz:" , error_dz0)
+print ("distance error0" , err0_idx)
+
+
+
+print ("distance error at hitting point" , err_idx)
+
+
+
+
 # %%

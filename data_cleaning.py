@@ -1,6 +1,6 @@
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 import numpy as np
-from helping_function import find_throwing
+from helping_function import find_throwing , hitting
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 data_robot = np.load("Data/Initial_data/third dataset/robot_throwing.npz")
@@ -28,8 +28,10 @@ idx_delete = []
 count_non = 0
 count_leave_ball = 0
 count_noise = 0
+count_not_hitting = 0
 for k in range(N_total):
     idx = find_throwing(ball_c[k] , rest_time)
+    idx_hit = hitting(ball_c[k] , idx)
     if idx is None:
         count_non += 1
         idx_delete.append(k)
@@ -41,7 +43,10 @@ for k in range(N_total):
             if np.mean(ball_c[k , rest_time:idx] )< 0.92:
                 count_noise +=1
                 idx_delete.append(k)
-
+            else:
+                if idx_hit is None:
+                    count_not_hitting +=1
+                    idx_delete.append(k)
 
 idx_delete =np.array(idx_delete)
 
@@ -51,6 +56,7 @@ print ("total number of initial samples is :" , N_total)
 print ("number of Non throwing samples is :" , count_non)
 print ("number of leaving ball instead of throwing  is :" , count_leave_ball)
 print ("number of throw happend but ball was too noisy in cup  is :" , count_noise)
+print ("number of sample which not hittig somewhere is :" , count_not_hitting)
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 time = np.delete(time , idx_delete , axis=0)
 robot_q = np.delete(robot_q , idx_delete , axis=0)
