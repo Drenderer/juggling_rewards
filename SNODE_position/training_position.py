@@ -8,6 +8,7 @@ from jax import random as jr
 from jaxtyping import Array, PyTree
 import matplotlib.pyplot as plt
 from dynax import ODESolver ,normalization_coefficients , ISPHS
+from Modified_ISPHS import Modified_ISPHS
 import klax
 from klax.nn import MLP , ConstantMatrix , ConstantSkewSymmetricMatrix , ConstantSPDMatrix
 import sys
@@ -94,11 +95,28 @@ ball_norm = Normalization(
     mean_u=jnp.zeros((1,)),
     alpha_u=jnp.ones((1,))
 )
+#%%%%%%%%%%%%%%%%%%%%%% build contact dataset for test and train %%%%%%%%%%%%%%%%%%%%%%%%%%%%
+N_test , T , _ = ball_test_norm.shape
+N_train , T, _  =ball_train_norm.shape
 
+contact_train = jnp.zeros((N_train , T))
+contact_test = jnp.zeros((N_test , T))
 
-#%%%%%%%%%%%%%%%%%%% check the data before training %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+throw_idx_train = index_train // 10
+throw_idx_test = index_test // 10
+
+# grid of time indices
+t_grid = jnp.arange(T)[None, :]   # shape: (1, T)
+
+# 1 before throw, 0 after throw
+contact_train = (t_grid < throw_idx_train[:, None]).astype(jnp.float32)
+contact_test = (t_grid < throw_idx_test[:, None]).astype(jnp.float32)
+
+#%%%%%%%%%%%%%%%%%%% check the data before training %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 idx =103 # choose sample
 print (index_test[idx])
+print (contact_test[idx])
 traj = robot_test_input[idx]   # shape (90, 12)
 traj_ball = ball_test[idx]
 x = traj[:, 0]
@@ -118,6 +136,7 @@ plt.plot(t, z, label='robot_z' , linestyle='--', color = 'r')
 plt.plot(t, ball_x, label='ball_x' , color='b')
 plt.plot(t, ball_y, label='ball_y', color='g')
 plt.plot(t, ball_z, label='ball_z' , color='r')
+plt.plot(t , contact_test[idx] , label='contact' )
 
 
 plt.xlabel('index')
@@ -127,68 +146,68 @@ plt.legend()
 
 plt.show()
 
-#%%%%%%%%%%%%%%%%%%%%%% Build the Model ( Encoder + ode solver + decoder) %%%%%%%%%%%%
+#%%%%%%%%%%%%%%%%%%%%%% Build the Model %%%%%%%%%%%%
 
-class Model (eqx.Module):
-    node: NODE
-    ode: ODESolver
-    encoder:eqx.nn.MLP
-    decoder:eqx.nn.MLP
-    latent_dim: int = eqx.field(static=True)
+class ContactHead(eqx.Module):
+    mlp: eqx.nn.MLP
 
-    def __init__ (self, node  , ode , key , latent_dim):
-        key1 , key2 = jr.split(key , 2)
-        self.node = node
-        self.ode = ode
-        self.latent_dim = latent_dim
-
-        self.encoder = eqx.nn.MLP(
-             in_size = 6,
-             out_size = latent_dim,
-             width_size = 32,
-             depth = 2,
-             activation=jax.nn.softplus,
-            key = key1,
-        )
-        self.decoder = eqx.nn.MLP(
-            in_size = latent_dim,
-            out_size= 6,
-            width_size = 32,
+    def __init__(self, key):
+        self.mlp = eqx.nn.MLP(
+            in_size=12,      
+            out_size=1,
+            width_size=16,
             depth=2,
-            activation=jax.nn.softplus,
-            key=key2,
+            key=key,
         )
 
-    def __call__(self, ts_robot, u_robot , ball_init):
+    def __call__(self, x, u):
+        y_ball = x[:6]
 
-        h0 = self.encoder(ball_init)
-        ball0 = self.decoder(h0)
-        h = self.ode(ts_robot, h0, us=u_robot)
-        y_ball = jax.vmap(self.decoder)(h)
+        ball_pos = y_ball[:3]
+        ball_vel = y_ball[3:6]
 
-        return y_ball, ball0
+        cup_pos = u[:3]
+        cup_vel = u[3:6]
+        cup_n = u[6:9]
+        cup_dn = u[9:12]
+
+        rel_pos = ball_pos - cup_pos
+        rel_vel = ball_vel - cup_vel
+
+        contact_input = jnp.concatenate(
+            [rel_pos, rel_vel, cup_n, cup_dn],
+            axis=0,
+        )
+
+        logit = self.mlp(contact_input).squeeze()
+        return jax.nn.sigmoid(logit)
 
 
 
 class Augmented_Model(eqx.Module):
     node: NODE
     ode: ODESolver
-    state_dim: int =eqx.field(static=True)
-    aug_dim: int=eqx.field(static=True)
+    state_dim: int = eqx.field(static=True)
+    aug_dim: int = eqx.field(static=True)
 
-    def __init__ (self , node, ode , state_dim , aug_dim):
+    def __init__(self, node, ode, state_dim, aug_dim):
         self.node = node
         self.ode = ode
         self.state_dim = state_dim
         self.aug_dim = aug_dim
-    
-    def __call__(self , ts_robot , u_robot , ball_init):
+
+    def __call__(self, ts_robot, u_robot, ball_init):
         aug0 = jnp.zeros((self.aug_dim,))
         h0 = jnp.concatenate([ball_init, aug0], axis=0)
+
         h = self.ode(ts_robot, h0, us=u_robot)
+
         y_ball = h[:, :6]
-        
-        return y_ball
+
+    
+        c = jax.vmap(self.node.contact)(h, u_robot)
+
+        return y_ball, c
 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -196,8 +215,7 @@ state_size =6
 aug_size = 12
 total_size = state_size+ aug_size
 key = jr.key(42)
-key_h , key_G , key_R , key_J = jr.split(key, 4)
-#nn = NODE(state_size=latent_dim , input_size=12, width_sizes=[64,64,64], key=key)
+key_h , key_G , key_R , key_J  , key_c= jr.split(key, 5)
 
 class Bounded_Energy(eqx.Module):
     mlp: eqx.nn.MLP
@@ -206,98 +224,54 @@ class Bounded_Energy(eqx.Module):
         x = self.mlp(h)
         return  jax.nn.softplus(x).squeeze() + jnp.sum(h**2)
 
+
 H = MLP(in_size=total_size , out_size=1 , width_sizes=[64,64,64] , key=key_h)
 J= ConstantSkewSymmetricMatrix((total_size,total_size) , key = key_J)
 R = ConstantSPDMatrix((total_size,total_size) , key = key_R)
 G = ConstantMatrix((total_size , 12) , key=key_G)
-
+contact = ContactHead(key=key_c,)
 H_bound = Bounded_Energy(H)
-bphnn = ISPHS(H_bound , J , R , G)
+bphnn = Modified_ISPHS(H_bound , J , R , G , contact)
 
 
 ode = ODESolver(bphnn)
+
+
+
 model = Augmented_Model(bphnn, ode, state_dim=state_size , aug_dim=aug_size)
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-def make_time_throw_zero(robot_time, mask, after_throw_steps=0):
+def make_time_start_zero(robot_time, mask):
     """
-    robot_time: (N, T)
-    mask:       (N, T), True for valid data, False for padding
-
-    Output:
-    - throw moment is exactly t = 0
-    - time remains strictly increasing
-    - padded part continues increasing safely for ODE
+    Keep original valid time values.
+    Only replace padded zeros with safe increasing values.
     """
 
     N, T = robot_time.shape
 
-    last_valid_idx = jnp.sum(mask.astype(jnp.int32), axis=1) - 1
+    valid_len = jnp.sum(mask.astype(jnp.int32), axis=1)
+    last_valid_idx = valid_len - 1
 
-    throw_idx = last_valid_idx - after_throw_steps
-
-    t_throw = robot_time[jnp.arange(N), throw_idx]
-
-    # real shifted time, throw becomes zero
-    time_shifted = robot_time - t_throw[:, None]
-
-    # estimate dt
     dt = robot_time[:, 1] - robot_time[:, 0]
 
     grid = jnp.arange(T)[None, :]
 
-    # continue after last valid shifted time
-    last_valid_time = time_shifted[jnp.arange(N), last_valid_idx]
+    last_valid_time = robot_time[jnp.arange(N), last_valid_idx]
 
     time_safe = last_valid_time[:, None] + (
         grid - last_valid_idx[:, None]
     ) * dt[:, None]
 
-    # use real shifted time for valid part, safe time for padding
-    time_final = jnp.where(mask, time_shifted, time_safe)
+    time_final = jnp.where(mask, robot_time, time_safe)
 
     return time_final
 
-time_train = make_time_throw_zero(robot_time_train_norm, mask_train)
-time_test  = make_time_throw_zero(robot_time_test_norm, mask_test)
-print (time_train[119])
+time_train = make_time_start_zero(robot_time_train_norm, mask_train)
+time_test  = make_time_start_zero(robot_time_test_norm, mask_test)
+print (time_test[idx])
 
 
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-def make_curriculum_weights(t: float, size: int, transition_width: float = 0.2):
-    """Generate adaptive temporal weights for trajectory fitting.
-
-    Computes weights w(tau):
-        tau<t: 1
-        tau>t+transition_width: 0
-        else: smooth cosine transition
-    for tau = linspace(0, 1, size)
-    Returns the normalized weights (softmax). 
-
-    Args:
-        t: Normalized training time as *positive* float. 
-            If t=0 then only the first `round(size * transition_width)` weights are non-zero.
-            If t>1 then all weights are equal.
-        size: Size of the output weights vector
-        transition_width: Ratio of the transition length to size. Defaults to 0.2.
-
-    Returns:
-        Normalized weight vector of size `size`.
-
-    """
-    ts = jnp.linspace(0, 1, size)
-
-    weights = jnp.where(
-        ts < t,
-        1.0,
-        jnp.where(
-            ts < t + transition_width,
-            0.5 + 0.5 * jnp.cos((ts - t) * jnp.pi / transition_width),
-            0.0,
-        ),
-    )
-    return jax.nn.softmax(weights)
-
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 class RunStateUpdater(klax.Callback):
     """Updates the run_state to be the training step."""
     
@@ -305,60 +279,23 @@ class RunStateUpdater(klax.Callback):
         context.state.run_state = context.state.step
 
 @klax.loss
-def curriculum_loss(model, batch, run_state):
-    robot_ts, robot_batch, mask_batch , ball_batch = batch
-    step = run_state
-    ball0 = ball_batch[:,0,:]
-    pred , init = jax.vmap(model , in_axes=(0,0,0))(robot_ts , robot_batch , ball0)
-    mask = mask_batch[..., None]  # (B, T, 1)
-
-    #t_schedule = step / 5000
-    t_schedule = jnp.minimum(run_state / 20000.0, 1)
-    
-    weights = make_curriculum_weights(t_schedule, robot_ts.shape[-1])
-
-    dynamic_loss_per_timestamp = jnp.sum(mask * jnp.square(pred - ball_batch), axis=(0, 2))
-    dynamic_loss = jnp.dot(weights, dynamic_loss_per_timestamp) / jnp.sum(mask)
-
-    landa1 = 0.01
-    loss_enc_dec = landa1 * jnp.mean(jnp.square(init - ball0))
-
-    return dynamic_loss + loss_enc_dec
-
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-weight1 = make_curriculum_weights(0.01 , 150)
-weight2 = make_curriculum_weights(0.1 , 150)
-weight3 = make_curriculum_weights(0.2 , 150 )
-weight4 = make_curriculum_weights(0.5 , 150 )
-weight5 = make_curriculum_weights(0.75 , 150 )
-weight6 = make_curriculum_weights(1 , 150 )
-plt.figure(figsize=(8,5))
-
-plt.plot(t, weight1*mask_train[idx], label='x')
-plt.plot(t, weight2*mask_train[idx], label='x')
-plt.plot(t, weight3*mask_train[idx], label='x')
-plt.plot(t, weight4*mask_train[idx], label='x')
-plt.plot(t, weight5*mask_train[idx], label='x')
-plt.plot(t, weight6*mask_train[idx], label='x')
-
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-@klax.loss
 def loss_Trajectory(model , data, batch_axis):
-    robot_ts , robot_batch, mask_batch, ball_batch = data
+    robot_ts , robot_batch, mask_batch, ball_batch , contact_batch = data
     ball0 = ball_batch[:,0,:]
-    pred = jax.vmap(model , in_axes=(0,0,0))(robot_ts , robot_batch , ball0)
+    pred , c_pred = jax.vmap(model , in_axes=(0,0,0))(robot_ts , robot_batch , ball0)
     mask = mask_batch[..., None]  # (B, T, 1)
     loss_pred = jnp.sum(mask * jnp.square(pred - ball_batch)) / (
         jnp.sum(mask) * ball_batch.shape[-1]
     )
-    return loss_pred 
+    loss_contact = jnp.sum(mask_batch*jnp.square(c_pred - contact_batch)) / (jnp.sum(mask_batch) + 1e-8)
+    landa = 0.2
+    return loss_pred + landa*loss_contact
+
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 model_ = klax.finalize(model)
 idx = 1
-pred_position_norm = model_(time_test[idx] ,robot_test_input_norm[idx] , ball_test_norm[idx,0])
-
+pred_position_norm , c = model_(time_test[idx] ,robot_test_input_norm[idx] , ball_test_norm[idx,0])
 # ---- find throw index
 last_valid_idx = jnp.sum(mask_test.astype(jnp.int32), axis=1) - 1
 hitting_idx = int(last_valid_idx[idx])
@@ -410,17 +347,31 @@ plt.suptitle(f"Ball vs Cup before training - sample {idx}", fontsize=14)
 plt.tight_layout()
 plt.show()
 
+t = range(len(x))
+
+plt.figure(figsize=(8,5))
+
+plt.plot(t, contact_test[idx], label='true contact' , linestyle='--', color='b')
+plt.plot(t, c, label='predict contact' , linestyle='--', color ='g')
+
+plt.xlabel('index')
+plt.ylabel('value')
+plt.title(f'Sample {idx} (x, y, z vs index)')
+plt.legend()
+
+plt.show()
+
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 model , hist_traj = klax.fit(
     model,
-    (time_train[:10], robot_train_input_norm[:10], mask_train[:10] , ball_train_norm[:10]),
-    validation_data=(time_test, robot_test_input_norm, mask_test, ball_test_norm),
+    (time_train, robot_train_input_norm, mask_train , ball_train_norm , contact_train),
+    validation_data=(time_test, robot_test_input_norm, mask_test, ball_test_norm , contact_test),
     run_state=0,
-    batch_size=2,
+    batch_size=32,
     optimizer=optax.adam(3e-4),
     loss= loss_Trajectory,
-    steps=15000,
+    steps=20000,
     verbose=True,
     callbacks=[RunStateUpdater()],
     log_every=50,
@@ -433,28 +384,28 @@ plt.show()
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 model_ = klax.finalize(model)
-idx = 9
-pred_position_norm = model_(time_train[idx] ,robot_train_input_norm[idx] , ball_train_norm[idx,0])
+idx = 360
+pred_position_norm , c = model_(time_test[idx] ,robot_test_input_norm[idx] , ball_test_norm[idx,0])
 
 # ---- find throw index
-last_valid_idx = jnp.sum(mask_train.astype(jnp.int32), axis=1) - 1
+last_valid_idx = jnp.sum(mask_test.astype(jnp.int32), axis=1) - 1
 hitting_idx = int(last_valid_idx[idx])
-throw_idx = int (index_train[idx]/10)
+throw_idx = int (index_test[idx]/10)
 
 # ---- de- normalize the prediction
 pred_x = ball_norm.inverse_transform_qs(pred_position_norm[..., 0:3])
 pred_dx = ball_norm.inverse_transform_q_ts(pred_position_norm[..., 3:6])
-denorm_time_train = norm.inverse_transform_ts(time_train)
+denorm_time_test = norm.inverse_transform_ts(time_test)
 
 
 pred_position = jnp.concatenate([pred_x , pred_dx]  , axis = -1)
 
 # ---- extract throw states
-true_traj = ball_train[idx]   # important
-true_hitting = ball_train[idx, hitting_idx, :]
+true_traj = ball_test[idx]   # important
+true_hitting = ball_test[idx, hitting_idx, :]
 pred_hitting= pred_position[hitting_idx, :]
 
-true_throw = ball_train[idx, throw_idx, :]
+true_throw = ball_test[idx, throw_idx, :]
 pred_throw= pred_position[throw_idx, :]
 
 print("true throw:", true_throw)
@@ -470,12 +421,12 @@ plt.figure(figsize=(12, 6))
 
 for d in range(6):
     plt.subplot(2, 3, d + 1)
-    valid = mask_train[idx]
+    valid = mask_test[idx]
 
-    plt.plot(denorm_time_train[idx][valid], robot_train_input[idx, :, d][valid], label="cup")
-    plt.plot(denorm_time_train[idx][valid], true_traj[valid, d], label="true ball")
-    plt.plot(denorm_time_train[idx][valid], pred_position[valid, d], label="pred ball")
-    plt.axvline(denorm_time_train[idx , throw_idx], linestyle='--', linewidth=1.0 , color='black')
+    plt.plot(denorm_time_test[idx][valid], robot_test_input[idx, :, d][valid], label="cup")
+    plt.plot(denorm_time_test[idx][valid], true_traj[valid, d], label="true ball")
+    plt.plot(denorm_time_test[idx][valid], pred_position[valid, d], label="pred ball")
+    plt.axvline(denorm_time_test[idx , throw_idx], linestyle='--', linewidth=1.0 , color='black')
 
     plt.xlabel("time [s]")
     plt.ylabel(labels[d])
@@ -487,6 +438,24 @@ plt.suptitle(f"Ball vs Cup after training - sample {idx}", fontsize=14)
 plt.tight_layout()
 plt.show()
 
+
+#%%%%%
+t = range(len(x))
+
+plt.figure(figsize=(8,5))
+
+plt.plot(t, contact_test[idx], label='true contact' , linestyle='--', color='b')
+plt.plot(t, c*mask_test[idx], label='predict contact' , linestyle='--', color ='g')
+
+plt.xlabel('index')
+plt.ylabel('value')
+plt.title(f'Sample {idx} (x, y, z vs index)')
+plt.legend()
+
+plt.show()
+
+#%%%
+print (contact_train[103])
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 '''
 plt.figure(figsize=(12, 6))
