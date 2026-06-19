@@ -34,6 +34,8 @@ index_test = data['index'][:]
 print (robot_time_train.shape ,robot_train_q.shape , robot_train_x.shape ,
         robot_train_coord.shape,ball_train.shape , index_train.shape)
 
+
+
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 coord_train_z = robot_train_coord [: , : , 6:9]
 coord_train_dz = robot_train_coord[: , : ,15:18]
@@ -41,11 +43,11 @@ coord_train_dz = robot_train_coord[: , : ,15:18]
 coord_test_z = robot_test_coord [: , : , 6:9]
 coord_test_dz = robot_test_coord[: , : ,15:18]
 
-robot_train_coord = jnp.concatenate([coord_train_z , coord_train_dz] , axis=-1)
+robot_train_coord1 = jnp.concatenate([coord_train_z , coord_train_dz] , axis=-1)
 robot_test_coord = jnp.concatenate([coord_test_z , coord_test_dz] , axis=-1)
 
 
-robot_train_input = jnp.concatenate([robot_train_x , robot_train_coord] , axis = -1)
+robot_train_input = jnp.concatenate([robot_train_x , robot_train_coord1] , axis = -1)
 robot_test_input = jnp.concatenate([robot_test_x , robot_test_coord] , axis = -1)
 
 mask_train = jnp.any(robot_train_input != 0, axis=-1)
@@ -53,6 +55,23 @@ mask_test = jnp.any(robot_test_input != 0, axis=-1)
 
 
 print (robot_train_input.shape , mask_train.shape)
+#%%%%%
+nz = robot_train_coord [: , : , 6:9]
+nz_norm = jnp.linalg.norm(nz, axis=-1)   # (N,T)
+
+mask = mask_train
+if mask.ndim == 3:
+    mask = mask[..., 0]                  # (N,T)
+
+print("nz_norm shape:", nz_norm.shape)
+print("mask shape:", mask.shape)
+
+valid_nz_norm = jnp.where(mask, nz_norm, jnp.nan)
+
+print("mean norm:", jnp.nanmean(valid_nz_norm))
+print("min norm:", jnp.nanmin(valid_nz_norm))
+print("max norm:", jnp.nanmax(valid_nz_norm))
+
 
 #%%%%%%%%%%%%%%%%%%% normalize coefficient with dynax %%%%%%%%%%%%%%%%%%%%%%%%%
 def masked_std(a, mask):
@@ -69,20 +88,24 @@ x_train  = robot_train_input[..., 0:3]
 dx_train = robot_train_input[..., 3:6]
 n_train  = robot_train_input[..., 6:9]
 dn_train = robot_train_input[..., 9:12]
+x_ball_train = ball_train[..., 0:3]
+dx_ball_train = ball_train[..., 3:6]
 
 # split train
 x_test  = robot_test_input[..., 0:3]
 dx_test = robot_test_input[..., 3:6]
 n_test  = robot_test_input[..., 6:9]
 dn_test = robot_test_input[..., 9:12]
+x_ball_test = ball_test[..., 0:3]
+dx_ball_test = ball_test[..., 3:6]
 
 # y contains position-like variables v contains their velocities
-y_train = jnp.concatenate([x_train, n_train], axis=-1)
-v_train = jnp.concatenate([dx_train, dn_train], axis=-1)
+y_train = jnp.concatenate([x_train, n_train , x_ball_train], axis=-1)
+v_train = jnp.concatenate([dx_train, dn_train , dx_ball_train], axis=-1)
 
 # y contains position-like variables v contains their velocities
-y_test = jnp.concatenate([x_test, n_test], axis=-1)
-v_test = jnp.concatenate([dx_test, dn_test], axis=-1)
+y_test = jnp.concatenate([x_test, n_test , x_ball_test], axis=-1)
+v_test = jnp.concatenate([dx_test, dn_test , dx_ball_test], axis=-1)
 
 mean_y = masked_mean(y_train, mask_train)
 std_y = masked_std(y_train, mask_train)
@@ -96,24 +119,36 @@ alpha, tau = normalization_coefficients(
 
 print (alpha)
 print (tau)
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 norm = Normalization(
-    mean_q=mean_y,
-    alpha_q=alpha,
+    mean_q=mean_y[:6],
+    alpha_q=alpha[:6],
     tau_q=tau,
     mean_u=jnp.zeros((1,)),
     alpha_u=jnp.ones((1,))
 )
 
+ball_norm = Normalization(
+    mean_q=mean_y[6:9],
+    alpha_q=alpha[6:9],
+    tau_q=norm.tau_q,   # important: same time scale as robot
+    mean_u=jnp.zeros((1,)),
+    alpha_u=jnp.ones((1,))
+)
+
+
 #%%%%%%%%%%%%%%%%%%%%%% normalizing train and test for robot %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 robot_time_train_norm = norm.transform_ts (robot_time_train)
-y_train_norm = norm.transform_qs(y_train)
-v_train_norm = norm.transform_q_ts(v_train)
+y_train_norm = norm.transform_qs(y_train[... , :6])
+v_train_norm = norm.transform_q_ts(v_train[... ,:6])
 
 
 robot_time_test_norm = norm.transform_ts (robot_time_test)
-y_test_norm = norm.transform_qs(y_test)
-v_test_norm = norm.transform_q_ts(v_test)
+y_test_norm = norm.transform_qs(y_test[... , :6])
+v_test_norm = norm.transform_q_ts(v_test[... ,:6])
 
 robot_train_input_norm = jnp.concatenate([y_train_norm[... ,0:3] ,v_train_norm[... ,0:3],
                                         y_train_norm[... ,3:6],v_train_norm[... ,3:6]] , axis = -1)
@@ -124,38 +159,12 @@ robot_test_input_norm = jnp.concatenate([y_test_norm[... ,0:3] ,v_test_norm[... 
 print (robot_train_input_norm.shape)
 
 #%%%%%%%%%%%%%%%%%%%%%% normalizing train and test for ball %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-ball_pos_train = ball_train[..., 0:3]
-ball_vel_train = ball_train[..., 3:6]
 
-ball_pos_test = ball_test[..., 0:3]
-ball_vel_test = ball_test[..., 3:6]
+ball_pos_train_norm = ball_norm.transform_qs(x_ball_train)
+ball_vel_train_norm = ball_norm.transform_q_ts(dx_ball_train)
 
-mean_ball = masked_mean(ball_pos_train, mask_train)
-std_ball_pos = masked_std(ball_pos_train, mask_train)
-std_ball_vel = masked_std(ball_vel_train, mask_train)
-
-alpha_ball, tau_ball = normalization_coefficients(
-    std_y=std_ball_pos,
-    std_v=std_ball_vel,
-    verbosity=0,
-)
-
-print (alpha_ball)
-print (tau_ball)
-
-ball_norm = Normalization(
-    mean_q=mean_ball,
-    alpha_q=alpha_ball,
-    tau_q=norm.tau_q,   # important: same time scale as robot
-    mean_u=jnp.zeros((1,)),
-    alpha_u=jnp.ones((1,))
-)
-
-ball_pos_train_norm = ball_norm.transform_qs(ball_pos_train)
-ball_vel_train_norm = ball_norm.transform_q_ts(ball_vel_train)
-
-ball_pos_test_norm = ball_norm.transform_qs(ball_pos_test)
-ball_vel_test_norm = ball_norm.transform_q_ts(ball_vel_test)
+ball_pos_test_norm = ball_norm.transform_qs(x_ball_test)
+ball_vel_test_norm = ball_norm.transform_q_ts(dx_ball_test)
 
 ball_train_norm = jnp.concatenate(
     [ball_pos_train_norm, ball_vel_train_norm],
@@ -185,42 +194,35 @@ ball_test_norm  = jnp.where(mask_test[..., None], ball_test_norm, 0.0)
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%5
 
-def make_time_throw_zero(robot_time, mask):
+def make_time_start_zero(robot_time, mask):
     """
-    robot_time: (N, T)
-    mask:       (N, T), True for valid data, False for padding
-
-    Output:
-    - valid part uses real measured time
-    - throw moment is exactly t = 0
-    - padded part continues increasing safely for ODE
+    Keep original valid time values.
+    Only replace padded zeros with safe increasing values.
     """
 
     N, T = robot_time.shape
 
-    last_valid_idx = jnp.sum(mask.astype(jnp.int32), axis=1) - 1
+    valid_len = jnp.sum(mask.astype(jnp.int32), axis=1)
+    last_valid_idx = valid_len - 1
 
-    t_throw = robot_time[jnp.arange(N), last_valid_idx]
-
-    # real shifted time
-    time_shifted = robot_time - t_throw[:, None]
-
-    # estimate dt from valid data
     dt = robot_time[:, 1] - robot_time[:, 0]
 
     grid = jnp.arange(T)[None, :]
 
-    # safe increasing time for padded part
-    time_safe = (grid - last_valid_idx[:, None]) * dt[:, None]
+    last_valid_time = robot_time[jnp.arange(N), last_valid_idx]
 
-    # use real time for valid part, safe time for padding
-    time_final = jnp.where(mask, time_shifted, time_safe)
+    time_safe = last_valid_time[:, None] + (
+        grid - last_valid_idx[:, None]
+    ) * dt[:, None]
+
+    time_final = jnp.where(mask, robot_time, time_safe)
 
     return time_final
 
-time_train = make_time_throw_zero(robot_time_train_norm, mask_train)
-time_test  = make_time_throw_zero(robot_time_test_norm, mask_test)
-print (time_test[420])
+time_train = make_time_start_zero(robot_time_train_norm, mask_train)
+time_test  = make_time_start_zero(robot_time_test_norm, mask_test)
+print (time_test[1])
+
 
 # %%%%%%%%%%%%%%%%%%%%%% double check the normalization for robot x , n
 
@@ -286,6 +288,7 @@ for d in range(3):
     plt.legend()
     plt.grid(True)
     plt.show()
+
 # %%%%%%%%%%%%%%%%%%%%%% double check the normalization for ball x 
 true_ball_x = ball_test[idx , : , 0:3]
 true_ball_dx = ball_test[idx , : , 3:6]
@@ -349,6 +352,23 @@ std_ball_vel = masked_std(ball_train_norm[...,3:6] , mask_train)
 
 print (mean_ball_vel , std_ball_vel)
 
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+nz = robot_train_input_norm [: , : , 6:9]
+nz_norm = jnp.linalg.norm(nz, axis=-1)   # (N,T)
+
+mask = mask_train
+if mask.ndim == 3:
+    mask = mask[..., 0]                  # (N,T)
+
+print("nz_norm shape:", nz_norm.shape)
+print("mask shape:", mask.shape)
+
+valid_nz_norm = jnp.where(mask, nz_norm, jnp.nan)
+
+print("mean norm:", jnp.nanmean(valid_nz_norm))
+print("min norm:", jnp.nanmin(valid_nz_norm))
+print("max norm:", jnp.nanmax(valid_nz_norm))
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 np.savez ('prepared_samples/train_data_norm.npz' , time = robot_time_train_norm
@@ -360,6 +380,6 @@ np.savez ('prepared_samples/test_data_norm.npz' , time = robot_time_test_norm
                                                  , robot_norm = robot_test_input_norm
                                                  , ball_norm = ball_test_norm)
 
-np.savez('prepared_samples/norm_value.npz' , alpha = alpha , alpha_ball = alpha_ball , 
-                                            tau = tau , mean_y = mean_y , mean_ball = mean_ball)
+np.savez('prepared_samples/norm_value.npz' , alpha = alpha[:6] , alpha_ball = alpha[6:9] , 
+                                            tau = tau , mean_y = mean_y[:6] , mean_ball = mean_y[6:9])
 # %%

@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 sys.path.append("..") 
 from node import NODE
+from Modified_isphs import contact_ISPHS
 from helping_function import hitting_ground , find_throwing , ball_free_flight_trajecotry , Forward_kinematic
 from normalize import Normalization, coefficients
 
@@ -92,113 +93,150 @@ ball_norm = Normalization(
     mean_u=jnp.zeros((1,)),
     alpha_u=jnp.ones((1,))
 )
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-def make_time_throw_zero(robot_time, mask):
-    """
-    robot_time: (N, T)
-    mask:       (N, T), True for valid data, False for padding
 
-    Output:
-    - valid part uses real measured time
-    - throw moment is exactly t = 0
-    - padded part continues increasing safely for ODE
+#%%%%%%%%%%%%%%%%%%%%%% build contact dataset for test and train %%%%%%%%%%%%%%%%%%%%%%%%%%%%
+N_test , T , _ = ball_test_norm.shape
+N_train , T, _  =ball_train_norm.shape
+
+contact_train = jnp.zeros((N_train , T))
+contact_test = jnp.zeros((N_test , T))
+
+throw_idx_train = index_train // 10
+throw_idx_test = index_test // 10
+
+# grid of time indices
+t_grid = jnp.arange(T)[None, :]   # shape: (1, T)
+
+# 1 before throw, 0 after throw
+contact_train = (t_grid < throw_idx_train[:, None]).astype(jnp.float32)
+contact_test = (t_grid < throw_idx_test[:, None]).astype(jnp.float32)
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+def make_time_start_zero(robot_time, mask):
+    """
+    Keep original valid time values.
+    Only replace padded zeros with safe increasing values.
     """
 
     N, T = robot_time.shape
 
-    last_valid_idx = jnp.sum(mask.astype(jnp.int32), axis=1) - 1
+    valid_len = jnp.sum(mask.astype(jnp.int32), axis=1)
+    last_valid_idx = valid_len - 1
 
-    t_throw = robot_time[jnp.arange(N), last_valid_idx]
-
-    # real shifted time
-    time_shifted = robot_time - t_throw[:, None]
-
-    # estimate dt from valid data
     dt = robot_time[:, 1] - robot_time[:, 0]
 
     grid = jnp.arange(T)[None, :]
 
-    # safe increasing time for padded part
-    time_safe = (grid - last_valid_idx[:, None]) * dt[:, None]
+    last_valid_time = robot_time[jnp.arange(N), last_valid_idx]
 
-    # use real time for valid part, safe time for padding
-    time_final = jnp.where(mask, time_shifted, time_safe)
+    time_safe = last_valid_time[:, None] + (
+        grid - last_valid_idx[:, None]
+    ) * dt[:, None]
+
+    time_final = jnp.where(mask, robot_time, time_safe)
 
     return time_final
 
-time_train = make_time_throw_zero(robot_time_train_norm, mask_train)
-time_test  = make_time_throw_zero(robot_time_test_norm, mask_test)
+time_train = make_time_start_zero(robot_time_train_norm, mask_train)
+time_test  = make_time_start_zero(robot_time_test_norm, mask_test)
+print (time_test[1])
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-class Model (eqx.Module):
+class ContactHead(eqx.Module):
+    mlp: eqx.nn.MLP
+
+    def __init__(self, key):
+        self.mlp = eqx.nn.MLP(
+            in_size=12,      
+            out_size=1,
+            width_size=32,
+            depth=2,
+            key=key,
+        )
+
+    def __call__(self, x, u):
+        y_ball = x[:6]
+
+        ball_pos = y_ball[:3]
+        ball_vel = y_ball[3:6]
+
+        cup_pos = u[:3]
+        cup_vel = u[3:6]
+        cup_n = u[6:9]
+        cup_dn = u[9:12]
+
+        rel_pos = ball_pos - cup_pos
+        rel_vel = ball_vel - cup_vel
+
+        contact_input = jnp.concatenate(
+            [rel_pos, rel_vel, cup_n, cup_dn],
+            axis=0,
+        )
+
+        logit = self.mlp(contact_input).squeeze()
+        return jax.nn.sigmoid(logit)
+
+
+
+class Augmented_Model(eqx.Module):
     node: NODE
     ode: ODESolver
-    encoder:eqx.nn.MLP
-    decoder:eqx.nn.MLP
-    latent_dim: int = eqx.field(static=True)
+    state_dim: int = eqx.field(static=True)
+    aug_dim: int = eqx.field(static=True)
 
-    def __init__ (self, node  , ode , key , latent_dim):
-        key1 , key2 = jr.split(key , 2)
+    def __init__(self, node, ode, state_dim, aug_dim):
         self.node = node
         self.ode = ode
-        self.latent_dim = latent_dim
+        self.state_dim = state_dim
+        self.aug_dim = aug_dim
 
-        self.encoder = eqx.nn.MLP(
-             in_size = 6,
-             out_size = latent_dim,
-             width_size = 32,
-             depth = 2,
-             activation=jax.nn.softplus,
-            key = key1,
-        )
-        self.decoder = eqx.nn.MLP(
-            in_size = latent_dim,
-            out_size= 6,
-            width_size = 32,
-            depth=2,
-            activation=jax.nn.softplus,
-            key=key2,
-        )
-
-    def __call__(self, ts_robot, u_robot , ball_init):
-
-        h0 = self.encoder(ball_init)
-        ball0 = self.decoder(h0)
+    def __call__(self, ts_robot, u_robot, ball_init):
+        aug0 = jnp.zeros((self.aug_dim,))
+        h0 = jnp.concatenate([ball_init, aug0], axis=0)
 
         h = self.ode(ts_robot, h0, us=u_robot)
 
-        y_ball = jax.vmap(self.decoder)(h)
+        y_ball = h[:, :6]
 
     
-        return y_ball, ball0
+        c = jax.vmap(self.node.contact)(h, u_robot)
 
-    
+        return y_ball, c
 
-latent_dim = 16
-key = jr.key(0)
-key_h , key_G , key_R , key_J = jr.split(key, 4)
-#nn = NODE(state_size=latent_dim , input_size=12, width_sizes=[64,64,64], key=key)
+
+state_size =6
+aug_size = 6
+total_size = state_size+ aug_size
+key = jr.key(42)
+key_h , key_G , key_R , key_J  , key_c= jr.split(key, 5)
+
 
 class Bounded_Energy(eqx.Module):
     mlp: eqx.nn.MLP
 
     def __call__(self, h):
         x = self.mlp(h)
-        return  jax.nn.softplus(x).squeeze() + (jnp.sum(h)**2)
+        return  jax.nn.softplus(x).squeeze() + jnp.sum(h**2)
 
-H = MLP(in_size=latent_dim , out_size=1 , width_sizes=[64,64,64] , key=key_h)
-J= ConstantSkewSymmetricMatrix((latent_dim,latent_dim) , key = key_J)
-R = ConstantSPDMatrix((latent_dim,latent_dim) , key = key_R)
-G = ConstantMatrix((latent_dim , 12) , key=key_G)
+
+H = MLP(in_size=total_size , out_size=1 , width_sizes=[64,64,64] , key=key_h)
+
+
+J= ConstantSkewSymmetricMatrix((total_size,total_size) , key = key_J)
+R = ConstantSPDMatrix((total_size,total_size) , key = key_R)
+G = ConstantMatrix((total_size , 12) , key=key_G)
+contact = ContactHead(key=key_c,)
+
 
 H_bound = Bounded_Energy(H)
-nn = ISPHS(H_bound , J , R , G)
+bphnn = contact_ISPHS(H_bound, J , R , G , contact)
 
+ode = ODESolver(bphnn)
 
-ode = ODESolver(nn)
-model_template = Model(nn, ode, latent_dim=latent_dim , key=key)
+model_template = Augmented_Model(bphnn, ode, state_dim=state_size , aug_dim=aug_size)
 
-model_loaded = eqx.tree_deserialise_leaves("trained_model_position5.eqx", model_template)
+model_loaded = eqx.tree_deserialise_leaves("trained_model_position6.eqx", model_template)
 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -214,14 +252,16 @@ N_eval = 2000
 
 time_eval = time_test[:N_eval]
 robot_eval = robot_test_input_norm[:N_eval]
-#mask_eval = mask_test[:N_eval]
+mask_eval = mask_test[:N_eval]
 ball_eval = ball_test[:N_eval]
 ball0_eval = ball_test_norm[:N_eval,0,:]
 last_valid_eval = last_valid_idx[:N_eval]
+index_eval = index_test[:N_eval]
+contact_eval = contact_test[:N_eval]
 
 
-def one_sample(time_i, robot_i,ball0_i, ball_i, throw_idx_i):
-    pred_traj_i, init_i = model_(time_i, robot_i, ball0_i)
+def one_sample(time_i, robot_i, ball0_i):
+    pred_traj_i, c_i = model_(time_i, robot_i, ball0_i)
 
     # ---- de- normalize the prediction
     pred_x = ball_norm.inverse_transform_qs(pred_traj_i[..., 0:3])
@@ -231,32 +271,36 @@ def one_sample(time_i, robot_i,ball0_i, ball_i, throw_idx_i):
 
     pred_position = jnp.concatenate([pred_x , pred_dx]  , axis = -1)
 
-    true_throw_i = ball_i[throw_idx_i, :]
-    pred_throw_i = pred_position[throw_idx_i, :]
+    #true_hit = ball_i[hitting_idx_i, :]
+    #pred_hit = pred_position[hitting_idx_i, :]
 
-    q_true_i, true_time_i = ball_free_flight_trajecotry(true_throw_i, ts)
-    q_pred_i, pred_time_i = ball_free_flight_trajecotry(pred_throw_i, ts)
+    #throw_idx_i = int(index_i /10)
+    #true_throw = ball_i [throw_idx_i , :]
+    #pred_throw = pred_position[throw_idx_i , :]
 
-    return q_true_i, q_pred_i, true_time_i, pred_time_i
+    
+
+    return pred_position , c_i
 
 
-batched_eval = jax.jit(jax.vmap(one_sample, in_axes=(0, 0, 0, 0, 0)))
+batched_eval = jax.jit(jax.vmap(one_sample, in_axes=(0, 0, 0)))
 
-q_total_true, q_total_pred, total_true_time, total_pred_time = batched_eval(
+q_total_pred , c_total_pred = batched_eval(
     time_eval,
     robot_eval,
     ball0_eval,
-    ball_eval,
-    last_valid_eval,
 )
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+last_valid_idx = jnp.sum(mask_eval.astype(jnp.int32), axis=1) - 1
+
 error = []
 for idx in range(2000):
-    time = total_true_time[idx]
-    error_x = jnp.abs(q_total_true[idx ,time , 0] - q_total_pred[idx ,time , 0]) 
-    error_y = jnp.abs(q_total_true[idx ,time , 1] - q_total_pred[idx ,time , 1]) 
-    error_z = jnp.abs(q_total_true[idx ,time , 2] - q_total_pred[idx ,time , 2])
+    hitting_idx = int(last_valid_idx[idx])
+    throw_idx = int (index_test[idx]/10)
+    error_x = jnp.abs(q_total_pred[idx ,hitting_idx , 0] - ball_eval[idx ,hitting_idx , 0]) 
+    error_y = jnp.abs(q_total_pred[idx ,hitting_idx, 1] - ball_eval[idx ,hitting_idx , 1]) 
+    error_z = jnp.abs(q_total_pred[idx ,hitting_idx, 2] - ball_eval[idx ,hitting_idx , 2])
 
     err1 = jnp.sqrt (error_x**2 + error_y**2 + error_z**2)
 
@@ -305,9 +349,11 @@ print(f"Percentage below R: {float(percentage_below):.2f}%")
 
 error0 = []
 for idx in range(2000):
-    error_x = jnp.abs(q_total_true[idx ,0 , 0] - q_total_pred[idx ,0 ,0]) 
-    error_y = jnp.abs(q_total_true[idx ,0, 0] - q_total_pred[idx ,0 , 0]) 
-    error_z = jnp.abs(q_total_true[idx ,0 , 0] - q_total_pred[idx ,0 , 0])
+    hitting_idx = int(last_valid_idx[idx])
+    throw_idx = int (index_test[idx]/10)
+    error_x = jnp.abs(q_total_pred[idx ,throw_idx , 0] - ball_eval[idx ,throw_idx , 0]) 
+    error_y = jnp.abs(q_total_pred[idx ,throw_idx, 1] - ball_eval[idx ,throw_idx , 1]) 
+    error_z = jnp.abs(q_total_pred[idx ,throw_idx, 2] - ball_eval[idx ,throw_idx , 2])
 
     err0 = jnp.sqrt (error_x**2 + error_y**2 + error_z**2)
     error0. append(err0)
@@ -338,91 +384,120 @@ print(f"Threshold D = {D} m")
 print(f"Samples below D: {int(num_below)} / {num_total}")
 print(f"Percentage below D: {float(percentage_below):.2f}%")
 
-
-
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+error_throw = []
+for idx in range (2000):
+    pred_throw = jnp.where (c_total_pred[idx]<0.2)[0]
+    true_throw = jnp.where (contact_test[idx]<0.2)[0]
 
-indices_bad = jnp.where(error > 6*D)[0]
-print ("bad ones" , indices_bad)
+    error_throw.append (jnp.abs(pred_throw[0] - true_throw[0]))
 
-indices_good = jnp.where(error<R/2)[0]
-print ("good ones" , indices_good)
+error_throw = jnp.array(error_throw)
+bins = jnp.linspace(error_throw.min(), error_throw.max(), 50)
+
+plt.figure(figsize=(10, 5))
+plt.hist(error_throw, bins=bins, color="tab:blue", alpha=0.7, label=f"Error ≤ {D}")
+plt.xlabel("Distance error [m]")
+plt.ylabel("Number of samples")
+plt.title("Distribution of position errors  at Throwing Time")
+plt.grid(alpha=0.3)
+plt.legend()
+plt.tight_layout()
+plt.show()
+    
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-idx = 360
-valid = mask_test[idx]
-pred_position_norm , init = model_(time_test[idx] ,robot_test_input_norm[idx] , ball_test_norm[idx ,0])
-labels = ["x", "y", "z", "vx", "vy", "vz"]
+idx = 6
+pred_position_norm , c = model_(time_test[idx] ,robot_test_input_norm[idx] , ball_test_norm[idx,0])
 
+# ---- find throw index
+last_valid_idx = jnp.sum(mask_test.astype(jnp.int32), axis=1) - 1
+hitting_idx = int(last_valid_idx[idx])
+throw_idx = int (index_test[idx]/10)
+
+# ---- de- normalize the prediction
 pred_x = ball_norm.inverse_transform_qs(pred_position_norm[..., 0:3])
 pred_dx = ball_norm.inverse_transform_q_ts(pred_position_norm[..., 3:6])
-time_test_denorm = norm.inverse_transform_ts(time_test)
+denorm_time_test = norm.inverse_transform_ts(time_test)
 
 
 pred_position = jnp.concatenate([pred_x , pred_dx]  , axis = -1)
 
+# ---- extract throw states
+true_traj = ball_test[idx]   # important
+true_hitting = ball_test[idx, hitting_idx, :]
+pred_hitting= pred_position[hitting_idx, :]
+
+true_throw = ball_test[idx, throw_idx, :]
+pred_throw= pred_position[throw_idx, :]
+
+print("true throw:", true_throw)
+print("pred throw:", pred_throw)
+
+print("true hitting:", true_hitting)
+print("pred hitting:", pred_hitting)
+
+
+labels = ["x", "y", "z", "vx", "vy", "vz"]
+
 plt.figure(figsize=(12, 6))
 
-for i in range (6):
-    plt.subplot(2, 3, i + 1)
-    plt.plot(time_test_denorm[idx,][valid] , ball_test[idx, :,i][valid] , lw=1.6 , label = "True ball " , color = 'g')
-    plt.plot(time_test_denorm[idx,][valid] , robot_test_x[ idx ,:,i][valid], lw=1.6 , label = "robot", color ='b')
-    plt.plot(time_test_denorm[idx][valid], pred_position[valid, i], label="pred ball" , color='r')
-    
-    plt.xlabel("time [s]")
-    plt.ylabel(labels[i])
-    plt.title(labels[i])
-    plt.grid(alpha=0.3)
-    plt.legend()
-
-plt.suptitle(f"Ball vs Cup (before throw) - sample {idx}", fontsize=14)
-plt.tight_layout()
-plt.show()
-
-
-
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-time = total_true_time[idx]
-labels = ["x", "y", "z" , "vx" , "vy" , "vz"]
-
-                  
-plt.figure(figsize=(12, 6))
 for d in range(6):
     plt.subplot(2, 3, d + 1)
-    plt.plot(ts[:time], q_total_pred[idx ,:time, d], label="Prediction")
-    plt.plot(ts[:time], q_total_true[idx , :time, d], label="True value")
-    plt.xlabel("time [s]")          # <-- real time
+    valid = mask_test[idx]
+
+    plt.plot(denorm_time_test[idx][valid], robot_test_input[idx, :, d][valid], label="cup")
+    plt.plot(denorm_time_test[idx][valid], true_traj[valid, d], label="true ball")
+    plt.plot(denorm_time_test[idx][valid], pred_position[valid, d], label="pred ball")
+    plt.axvline(denorm_time_test[idx , throw_idx], linestyle='--', linewidth=1.0 , color='black')
+
+    plt.xlabel("time [s]")
     plt.ylabel(labels[d])
     plt.title(labels[d])
     plt.grid(alpha=0.3)
     plt.legend()
 
-plt.suptitle(f"Ball state prediction - sample {idx}", fontsize=14)
-plt.tight_layout(rect=[0, 0, 1, 0.95])
+plt.suptitle(f"Ball vs Cup after training - sample {idx}", fontsize=14)
+plt.tight_layout()
 plt.show()
 
-error_x = jnp.abs(q_total_true[idx ,time , 0] - q_total_pred[idx ,time , 0]) 
-error_y = jnp.abs(q_total_true[idx ,time, 1] - q_total_pred[idx ,time, 1]) 
-error_z = jnp.abs(q_total_true[idx ,time , 2] - q_total_pred[idx ,time , 2])
+t = range(150)
+
+plt.figure(figsize=(8,5))
+
+plt.plot(t, contact_test[idx], label='true contact' , linestyle='--', color='b')
+plt.plot(t, c, label='predict contact' , linestyle='--', color ='g')
+plt.plot(t, mask_test[idx], label='valid mask' , linestyle='--', color ='r')
+
+plt.xlabel('index')
+plt.ylabel('value')
+plt.title(f'Sample {idx} (x, y, z vs index)')
+plt.legend()
+
+plt.show()
+
+
+
+
+
+error_x = jnp.abs(ball_eval[idx ,hitting_idx , 0] - q_total_pred[idx ,hitting_idx , 0]) 
+error_y = jnp.abs(ball_eval[idx ,hitting_idx, 1] - q_total_pred[idx ,hitting_idx, 1]) 
+error_z = jnp.abs(ball_eval[idx ,hitting_idx, 2] - q_total_pred[idx ,hitting_idx, 2])
 
 err_idx = jnp.sqrt (error_x**2 + error_y**2 + error_z**2)
 
-error_x0 = jnp.abs(q_total_true[idx ,0 , 0] - q_total_pred[idx ,0 , 0]) 
-error_y0 = jnp.abs(q_total_true[idx ,0, 1] - q_total_pred[idx ,0, 1]) 
-error_z0 = jnp.abs(q_total_true[idx ,0 , 2] - q_total_pred[idx ,0 , 2])
+error_x0 = jnp.abs(ball_eval[idx ,throw_idx, 0] - q_total_pred[idx ,throw_idx , 0]) 
+error_y0 = jnp.abs(ball_eval[idx ,throw_idx, 1] - q_total_pred[idx ,throw_idx, 1]) 
+error_z0 = jnp.abs(ball_eval[idx ,throw_idx, 2] - q_total_pred[idx ,throw_idx, 2])
 
-error_dx0 = jnp.abs(q_total_true[idx ,0 , 3] - q_total_pred[idx ,0 , 3]) 
-error_dy0 = jnp.abs(q_total_true[idx ,0, 4] - q_total_pred[idx ,0, 4]) 
-error_dz0 = jnp.abs(q_total_true[idx ,0 , 5] - q_total_pred[idx ,0 , 5])
+
 
 err0_idx = jnp.sqrt (error_x0**2 + error_y0**2 + error_z0**2)
 
 print ("error0 in x:" , error_x0)
 print ("error0 in y:" , error_y0)
 print ("error0 in z:" , error_z0)
-print ("error0 in Vx:" , error_dx0)
-print ("error0 in Vy:" , error_dy0)
-print ("error0 in Vz:" , error_dz0)
-print ("distance error0" , err0_idx)
+
+print ("distance error0 :" , err0_idx)
 
 
 

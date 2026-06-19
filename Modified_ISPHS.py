@@ -4,7 +4,7 @@ import equinox as eqx
 import jax
 from jaxtyping import Array, Float, Scalar
 
-class Modified_ISPHS (eqx.Module):
+class contact_ISPHS (eqx.Module):
 
     hamiltonian: Callable[[Array], Scalar]
     structure_matrix: Callable[[Float[Array, "n"]], Float[Array, "n n"]]  
@@ -32,12 +32,17 @@ class Modified_ISPHS (eqx.Module):
         self.contact = contact
 
     def __call__(self, t: Scalar, x: Array, u: Array | None = None) -> Array:
-
-        structure_matrix = self.structure_matrix(x)
+        
+        if self.contact is None:
+                c = 0.0
+        else:
+                c = self.contact(x, u)     # scalar in [0, 1]
+        c= 0.0
+        structure_matrix = self.structure_matrix
 
         if self.dissipation_matrix is not None:
             dissipation_matrix = self.dissipation_matrix(x)
-            structure_matrix -= dissipation_matrix
+            structure_matrix = structure_matrix - c * dissipation_matrix
 
         x_t = structure_matrix @ jax.grad(self.hamiltonian)(x)
         
@@ -48,14 +53,10 @@ class Modified_ISPHS (eqx.Module):
                     "The ISPHS has an input matrix but no input u was provided."
                 )
 
-            input_matrix = self.input_matrix(x)
+            input_matrix = self.input_matrix(x , u)
 
-            if self.contact is None:
-                c = 1.0
-            else:
-                c = self.contact(x, u)     # scalar in [0, 1]
-
-            x_t = x_t + c * (input_matrix @ u)
+            #x_t = x_t + c * input_matrix
+            #x_t = x_t.at[3:6].add(c*input_matrix)
 
         return x_t
 
