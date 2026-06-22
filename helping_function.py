@@ -42,6 +42,20 @@ def ball_free_flight_trajecotry (s0 , ts , gs=9.81):
     return ball_q , time_hit
 
 
+def ball_free_flight_trajecotry_training(s0 , ts , gs=9.81):
+    x0, y0, z0, vx0, vy0, vz0 = s0
+    t = ts
+    x = x0 + vx0 * t
+    y = y0 + vy0 * t
+    z = z0 + vz0 * t - 0.5 * gs * t**2
+    vx = jnp.full_like(t, vx0)
+    vy = jnp.full_like(t, vy0)
+    vz = vz0 - gs * t
+
+    ball_q=jnp.stack([x, y, z, vx, vy, vz], axis=-1)
+    return ball_q 
+
+
 def Forward_kinematic (q):
     L = jnp.array([-2.3360866e-05  ,-1.8214112e-05, 1.1860114e+00 ,5.4999387e-01 ,
                    2.5295885e-05 ,-4.5004494e-02 ,4.4200087e-01,2.5333025e-05 , 8.8627271e-02 ])

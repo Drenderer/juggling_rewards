@@ -91,8 +91,74 @@ max_train = find_smallest_flight(ball_train_c)
 max_test = find_smallest_flight(ball_test_c)
 
 print(max_train, max_test)
+
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-def prepare_dataset_position(time ,robot_q , robot_dq , robot_ddq , robot_u,
+def prepare_dataset_position_until_throw(time ,robot_q , robot_dq , robot_ddq , robot_u,
+                  ball_x , ball_dx , ball_c , step=10 , window_size = 84 , rest_time =50):
+
+    N_total, T, _ = robot_q.shape
+    robot_y , robot_t , ball_y , index  = [] , [] , [] , []
+    for i in range(N_total):
+
+        idx = find_throwing(ball_c[i] , rest_time )
+        robot_full_data = np.concatenate([robot_q[i] , robot_dq[i] , robot_ddq[i] , robot_u[i]] , axis =-1) 
+        ball_full_data = np.concatenate([ball_x[i] , ball_dx[i]], axis=-1)
+
+        robot_dim = robot_full_data.shape[-1]
+        ball_dim = ball_full_data.shape[-1]
+
+        robot_data = np.zeros((window_size, robot_dim))
+        ball_data = np.zeros((window_size, ball_dim))
+        t = np.zeros((window_size,))
+        
+        cell_throw = idx // step
+        sample_indices = idx - np.arange(cell_throw, -1, -1) * step
+        n_samples = len(sample_indices)
+
+        robot_data[:n_samples] = robot_full_data[sample_indices]
+        ball_data[:n_samples] = ball_full_data[sample_indices]
+        t[:n_samples] = time[i, sample_indices]
+
+    
+
+        robot_t.append(t)
+        robot_y.append(robot_data)
+        ball_y.append(ball_data)
+        index.append(idx)
+    
+    return robot_t, robot_y , ball_y , index
+
+    
+robot_train_t , robot_train_y , ball_train_y, index_train = prepare_dataset_position_until_throw(time_train,robot_train_q , 
+                                                            robot_train_dq , 
+                                                            robot_train_ddq , robot_train_u,ball_train_x , 
+                                                            ball_train_dx , ball_train_c)
+robot_train_t = np.array(robot_train_t)
+robot_train_y = np.array(robot_train_y)
+ball_train_y = np.array(ball_train_y)
+index_train = np.array (index_train)
+
+
+robot_test_t , robot_test_y , ball_test_y, index_test = prepare_dataset_position_until_throw(time_test,robot_test_q , 
+                                                            robot_test_dq , 
+                                                            robot_test_ddq , robot_test_u,ball_test_x , 
+                                                            ball_test_dx , ball_test_c)
+robot_test_t = np.array(robot_test_t)
+robot_test_y = np.array(robot_test_y)
+ball_test_y = np.array(ball_test_y)
+index_test = np.array (index_test)
+
+
+print (robot_train_t.shape, robot_train_y.shape , ball_train_y.shape , index_train.shape)
+print (robot_test_t.shape, robot_test_y.shape , ball_test_y.shape , index_test.shape)
+
+robot_train_y = robot_train_y[: , : , :8]
+robot_test_y = robot_test_y[: , : , :8]
+
+
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+def prepare_dataset_position_until_hit(time ,robot_q , robot_dq , robot_ddq , robot_u,
                   ball_x , ball_dx , ball_c , step=10  , window_size = 150 , rest_time =50):
 
     N_total, T, _ = robot_q.shape
@@ -131,7 +197,7 @@ def prepare_dataset_position(time ,robot_q , robot_dq , robot_ddq , robot_u,
     return robot_t, robot_y , ball_y , index
 
     
-robot_train_t , robot_train_y , ball_train_y, index_train = prepare_dataset_position(time_train,robot_train_q , 
+robot_train_t , robot_train_y , ball_train_y, index_train = prepare_dataset_position_until_hit(time_train,robot_train_q , 
                                                             robot_train_dq , 
                                                             robot_train_ddq , robot_train_u,ball_train_x , 
                                                             ball_train_dx , ball_train_c)
@@ -141,7 +207,7 @@ ball_train_y = np.array(ball_train_y)
 index_train = np.array (index_train)
 
 
-robot_test_t , robot_test_y , ball_test_y, index_test = prepare_dataset_position(time_test,robot_test_q , 
+robot_test_t , robot_test_y , ball_test_y, index_test = prepare_dataset_position_until_hit(time_test,robot_test_q , 
                                                             robot_test_dq , 
                                                             robot_test_ddq , robot_test_u,ball_test_x , 
                                                             ball_test_dx , ball_test_c)
@@ -236,11 +302,11 @@ print(robot_test_x.shape, robot_test_coord.shape)
 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-np.savez ('prepared_samples/train_data.npz' , robot_t= robot_train_t ,robot_q = robot_train_q , 
+np.savez ('prepared_samples/train_data.npz' , robot_t= robot_train_t ,robot_q = robot_train_y , 
                                             robot_x = robot_train_x , robot_coord = robot_train_coord,
                                             ball_y = ball_train_y , index = index_train)
 
-np.savez ('prepared_samples/test_data.npz' , robot_t= robot_test_t ,robot_q = robot_test_q , 
+np.savez ('prepared_samples/test_data.npz' , robot_t= robot_test_t ,robot_q = robot_test_y , 
                                             robot_x = robot_test_x , robot_coord = robot_test_coord,
                                             ball_y = ball_test_y , index = index_test)
 # %%

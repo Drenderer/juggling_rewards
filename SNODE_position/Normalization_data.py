@@ -55,23 +55,6 @@ mask_test = jnp.any(robot_test_input != 0, axis=-1)
 
 
 print (robot_train_input.shape , mask_train.shape)
-#%%%%%
-nz = robot_train_coord [: , : , 6:9]
-nz_norm = jnp.linalg.norm(nz, axis=-1)   # (N,T)
-
-mask = mask_train
-if mask.ndim == 3:
-    mask = mask[..., 0]                  # (N,T)
-
-print("nz_norm shape:", nz_norm.shape)
-print("mask shape:", mask.shape)
-
-valid_nz_norm = jnp.where(mask, nz_norm, jnp.nan)
-
-print("mean norm:", jnp.nanmean(valid_nz_norm))
-print("min norm:", jnp.nanmin(valid_nz_norm))
-print("max norm:", jnp.nanmax(valid_nz_norm))
-
 
 #%%%%%%%%%%%%%%%%%%% normalize coefficient with dynax %%%%%%%%%%%%%%%%%%%%%%%%%
 def masked_std(a, mask):
