@@ -37,6 +37,28 @@ index_test = data['index'][:]
 print (robot_time_train.shape ,robot_train_q.shape , robot_train_x.shape ,
         robot_train_coord.shape,ball_train.shape , index_train.shape)
 
+
+#%%%%%%%%%%%%%%%%%%%% import norm data %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+data = np.load('prepared_samples/train_data_norm.npz')
+robot_time_train_norm = data['time']
+robot_train_input_norm = data['robot_norm']
+ball_train_norm = data['ball_norm']
+
+data = np.load('prepared_samples/test_data_norm.npz')
+robot_time_test_norm = data['time']
+robot_test_input_norm = data['robot_norm']
+ball_test_norm = data['ball_norm']
+
+data = np.load('prepared_samples/norm_value.npz')
+alpha = data['alpha']
+alpha_ball = data['alpha_ball']
+tau = data['tau']
+mean_y = data['mean_y']
+mean_ball = data['mean_ball']
+
+print (robot_time_train_norm.shape , robot_train_input_norm.shape)
+
+
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 coord_train_z = robot_train_coord [: , : , 6:9]
 coord_train_dz = robot_train_coord[: , : ,15:18]
@@ -57,14 +79,36 @@ mask_test = jnp.any(robot_test_input != 0, axis=-1)
 
 print (robot_train_input.shape , mask_train.shape)
 
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-idx = 302  # choose sample
 
-traj = robot_train_input[idx]   # shape (84, 12)
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+norm = Normalization(
+    mean_q=mean_y,
+    alpha_q=alpha,
+    tau_q=tau,
+    mean_u=jnp.zeros((1,)),
+    alpha_u=jnp.ones((1,))
+)
+
+ball_norm = Normalization(
+    mean_q=mean_ball,
+    alpha_q=alpha_ball,
+    tau_q=norm.tau_q,  
+    mean_u=jnp.zeros((1,)),
+    alpha_u=jnp.ones((1,))
+)
+
+
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+idx = 3 # choose sample
+
+traj = robot_train_input_norm[idx]   # shape (84, 12)
 
 x = traj[:, 0]
 y = traj[:, 1]
 z = traj[:, 2]
+
+mask = mask_train[idx]
 
 t = range(len(x))
 
@@ -73,6 +117,7 @@ plt.figure(figsize=(8,5))
 plt.plot(t, x, label='x')
 plt.plot(t, y, label='y')
 plt.plot(t, z, label='z')
+plt.plot(t , mask , label='mask')
 
 plt.xlabel('index')
 plt.ylabel('value')
@@ -131,12 +176,13 @@ class Model (eqx.Module):
 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-latent_dim =16
-key = jr.key(0)
+latent_dim =24
+key = jr.key(1)
 n_key , j_key , r_key , g_key , m_key = jr.split(key , 5)
 
-#nn = NODE(state_size=latent_dim , input_size=12, width_sizes=[64,64,64], key=key)
+nn = NODE(state_size=latent_dim , input_size=12, width_sizes=[64,128,64], key=key)
 
+''''
 H = MLP (in_size=latent_dim , out_size=1 , width_sizes=[64,64,64] , key=n_key)
 class Bounded_Energy(eqx.Module):
     mlp: eqx.nn.MLP
@@ -153,47 +199,40 @@ G = ConstantMatrix((latent_dim, 12), key=g_key)
 
 
 nn =ISPHS(H_bounded , J , R , G)
+'''
 ode = ODESolver(nn)
 model = Model( nn , ode, latent_dim=latent_dim , key=m_key)
 
 
 
-
-def make_time_throw_zero(robot_time, mask):
+def make_time_start_zero(robot_time, mask):
     """
-    robot_time: (N, T)
-    mask:       (N, T), True for valid data, False for padding
-
-    Output:
-    - valid part uses real measured time
-    - throw moment is exactly t = 0
-    - padded part continues increasing safely for ODE
+    Keep original valid time values.
+    Only replace padded zeros with safe increasing values.
     """
 
     N, T = robot_time.shape
 
-    last_valid_idx = jnp.sum(mask.astype(jnp.int32), axis=1) - 1
+    valid_len = jnp.sum(mask.astype(jnp.int32), axis=1)
+    last_valid_idx = valid_len - 1
 
-    t_throw = robot_time[jnp.arange(N), last_valid_idx]
-
-    # real shifted time
-    time_shifted = robot_time - t_throw[:, None]
-
-    # estimate dt from valid data
     dt = robot_time[:, 1] - robot_time[:, 0]
 
     grid = jnp.arange(T)[None, :]
 
-    # safe increasing time for padded part
-    time_safe = (grid - last_valid_idx[:, None]) * dt[:, None]
+    last_valid_time = robot_time[jnp.arange(N), last_valid_idx]
 
-    # use real time for valid part, safe time for padding
-    time_final = jnp.where(mask, time_shifted, time_safe)
+    time_safe = last_valid_time[:, None] + (
+        grid - last_valid_idx[:, None]
+    ) * dt[:, None]
+
+    time_final = jnp.where(mask, robot_time, time_safe)
 
     return time_final
 
-time_train = make_time_throw_zero(robot_time_train, mask_train)
-time_test  = make_time_throw_zero(robot_time_test, mask_test)
+time_train = make_time_start_zero(robot_time_train_norm, mask_train)
+time_test  = make_time_start_zero(robot_time_test_norm, mask_test)
+
 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -208,8 +247,16 @@ def free_flight_loss(pred_throw, true_throw):
     H = 250
     ts = jnp.arange(H) * DT
 
-    true_q = ball_free_flight_trajecotry_training(true_throw, ts)
-    pred_q = ball_free_flight_trajecotry_training(pred_throw, ts)
+    pred_x = ball_norm.inverse_transform_qs (pred_throw[:3])
+    pred_dx = ball_norm.inverse_transform_q_ts(pred_throw[3:6])
+    pred = jnp.concat([pred_x , pred_dx])
+
+    true_x = ball_norm.inverse_transform_qs (true_throw[:3])
+    true_dx = ball_norm.inverse_transform_q_ts(true_throw[3:6])
+    true = jnp.concat([true_x , true_dx])
+
+    true_q = ball_free_flight_trajecotry_training(true, ts)
+    pred_q = ball_free_flight_trajecotry_training(pred ,ts)
 
     sq_err = (pred_q - true_q) ** 2        # (H, 6)
 
@@ -232,7 +279,10 @@ def loss_Trajectory(model, data, batch_axis):
     )
 
     loss_init = jnp.mean((pred_init - ball_batch[:, 0, :]) ** 2)
-
+    '''
+    jax.debug.print("loss_pred {}", loss_pred)
+    jax.debug.print("weighted_init {}", 0.1 * loss_init)
+    '''
     return loss_pred +  0.1 * loss_init 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -245,13 +295,13 @@ class RunStateUpdater(klax.Callback):
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 model , hist_traj = klax.fit(
     model,
-    (time_train, robot_train_input, mask_train , ball_train),
-    validation_data=(time_test, robot_test_input,mask_test, ball_test),
+    (time_train, robot_train_input_norm, mask_train, ball_train_norm),
+    validation_data=(time_test, robot_test_input_norm,mask_test, ball_test_norm),
     run_state=0,
     batch_size=64,
     optimizer=optax.adam(3e-4),
     loss= loss_Trajectory,
-    steps=50000,
+    steps=10000,
     verbose=True,
     callbacks=[RunStateUpdater()],
     log_every=50,
@@ -264,8 +314,8 @@ plt.show()
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 model_ = klax.finalize(model)
-idx = 791
-pred , init = model_(time_test[idx] ,robot_test_input[idx] , mask_test[idx])
+idx = 24
+pred_norm , init = model_(time_test[idx] ,robot_test_input_norm[idx] , mask_test[idx])
 
 # ---- find throw index
 last_valid_idx = jnp.sum(mask_test.astype(jnp.int32), axis=1) - 1
@@ -276,8 +326,13 @@ true_traj = ball_test[idx]   # important
 true_throw = ball_test[idx, throw_idx, :]
 #pred_throw = pred_position[throw_idx, :]
 
-print("true throw:", true_throw)
-#print("pred throw:", pred_throw)
+# ----- denormalize the prediction
+time_test_denorm1 = ball_norm.inverse_transform_ts(time_test)
+time_test_denorm2 = norm.inverse_transform_ts(time_test)
+pred_x = ball_norm.inverse_transform_qs (pred_norm[:3])
+pred_dx = ball_norm.inverse_transform_q_ts(pred_norm[3:6])
+
+pred = jnp.concat([pred_x , pred_dx])
 
 # ---- free flight
 DT = 0.002
@@ -294,8 +349,8 @@ for d in range(6):
     plt.subplot(2, 3, d + 1)
     valid = mask_test[idx]
 
-    plt.plot(time_test[idx][valid], robot_test_input[idx, :, d][valid], label="cup")
-    plt.plot(time_test[idx][valid], true_traj[valid, d], label="true ball")
+    plt.plot(time_test_denorm1[idx][valid], robot_test_input[idx, :, d][valid], label="cup")
+    plt.plot(time_test_denorm1[idx][valid], true_traj[valid, d], label="true ball")
     #plt.plot(time_test[idx][valid], pred_position[valid, d], label="pred ball")
 
     plt.xlabel("time [s]")
@@ -336,7 +391,7 @@ error = jnp.sqrt (error_x**2 + error_y**2 + error_z**2)
 print ("distance error" , error)
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-eqx.tree_serialise_leaves("trained_model_position10_1.eqx", model_)
+eqx.tree_serialise_leaves("trained_model_position10_2.eqx", model_)
 
 
 # %%

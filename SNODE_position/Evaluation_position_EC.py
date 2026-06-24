@@ -35,6 +35,27 @@ index_test = data['index'][:]
 print (robot_time_train.shape ,robot_train_q.shape , robot_train_x.shape ,
         robot_train_coord.shape,ball_train.shape , index_train.shape)
 
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+data = np.load('prepared_samples/train_data_norm.npz')
+robot_time_train_norm = data['time']
+robot_train_input_norm = data['robot_norm']
+ball_train_norm = data['ball_norm']
+
+data = np.load('prepared_samples/test_data_norm.npz')
+robot_time_test_norm = data['time']
+robot_test_input_norm = data['robot_norm']
+ball_test_norm = data['ball_norm']
+
+data = np.load('prepared_samples/norm_value.npz')
+alpha = data['alpha']
+alpha_ball = data['alpha_ball']
+tau = data['tau']
+mean_y = data['mean_y']
+mean_ball = data['mean_ball']
+
+print (robot_time_train_norm.shape , robot_train_input_norm.shape)
+
+
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 coord_train_z = robot_train_coord [: , : , 6:9]
@@ -58,41 +79,50 @@ print (robot_train_input.shape , mask_train.shape)
 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-def make_time_throw_zero(robot_time, mask):
-    """
-    robot_time: (N, T)
-    mask:       (N, T), True for valid data, False for padding
+norm = Normalization(
+    mean_q=mean_y,
+    alpha_q=alpha,
+    tau_q=tau,
+    mean_u=jnp.zeros((1,)),
+    alpha_u=jnp.ones((1,))
+)
 
-    Output:
-    - valid part uses real measured time
-    - throw moment is exactly t = 0
-    - padded part continues increasing safely for ODE
+ball_norm = Normalization(
+    mean_q=mean_ball,
+    alpha_q=alpha_ball,
+    tau_q=norm.tau_q,  
+    mean_u=jnp.zeros((1,)),
+    alpha_u=jnp.ones((1,))
+)
+
+def make_time_start_zero(robot_time, mask):
+    """
+    Keep original valid time values.
+    Only replace padded zeros with safe increasing values.
     """
 
     N, T = robot_time.shape
 
-    last_valid_idx = jnp.sum(mask.astype(jnp.int32), axis=1) - 1
+    valid_len = jnp.sum(mask.astype(jnp.int32), axis=1)
+    last_valid_idx = valid_len - 1
 
-    t_throw = robot_time[jnp.arange(N), last_valid_idx]
-
-    # real shifted time
-    time_shifted = robot_time - t_throw[:, None]
-
-    # estimate dt from valid data
     dt = robot_time[:, 1] - robot_time[:, 0]
 
     grid = jnp.arange(T)[None, :]
 
-    # safe increasing time for padded part
-    time_safe = (grid - last_valid_idx[:, None]) * dt[:, None]
+    last_valid_time = robot_time[jnp.arange(N), last_valid_idx]
 
-    # use real time for valid part, safe time for padding
-    time_final = jnp.where(mask, time_shifted, time_safe)
+    time_safe = last_valid_time[:, None] + (
+        grid - last_valid_idx[:, None]
+    ) * dt[:, None]
+
+    time_final = jnp.where(mask, robot_time, time_safe)
 
     return time_final
 
-time_train = make_time_throw_zero(robot_time_train, mask_train)
-time_test  = make_time_throw_zero(robot_time_test, mask_test)
+time_train = make_time_start_zero(robot_time_train_norm, mask_train)
+time_test  = make_time_start_zero(robot_time_test_norm, mask_test)
+
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 class Model (eqx.Module):
@@ -150,7 +180,7 @@ encoder = NODE(state_size=latent_dim, input_size=12, width_sizes=[64,64, 64], ke
 ode = ODESolver(encoder)
 model_template = Model(encoder, ode, latent_dim=latent_dim, key=key)
 
-model_loaded = eqx.tree_deserialise_leaves("trained_model_position10_1.eqx", model_template)
+model_loaded = eqx.tree_deserialise_leaves("trained_model_position10_2.eqx", model_template)
 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -164,8 +194,8 @@ last_valid_idx = jnp.sum(mask_test.astype(jnp.int32), axis=1) - 1
 
 N_eval = 2000
 
-time_eval = time_test[:N_eval]
-robot_eval = robot_test_input[:N_eval]
+time_eval_norm = time_test[:N_eval]
+robot_eval_norm = robot_test_input_norm[:N_eval]
 mask_eval = mask_test[:N_eval]
 ball_eval = ball_test[:N_eval]
 last_valid_eval = last_valid_idx[:N_eval]
@@ -174,10 +204,16 @@ last_valid_eval = last_valid_idx[:N_eval]
 def one_sample(time_i, robot_i, mask_i, ball_i, throw_idx_i):
     pred_traj_i, init_i = model_(time_i, robot_i, mask_i)
 
+    pred_x = ball_norm.inverse_transform_qs (pred_traj_i[:3])
+    pred_dx = ball_norm.inverse_transform_q_ts(pred_traj_i[3:6])
+
+    pred = jnp.concat([pred_x , pred_dx])
+
+    
     true_throw_i = ball_i[throw_idx_i, :]
 
     q_true_i, true_time_i = ball_free_flight_trajecotry(true_throw_i, ts)
-    q_pred_i, pred_time_i = ball_free_flight_trajecotry(pred_traj_i, ts)
+    q_pred_i, pred_time_i = ball_free_flight_trajecotry(pred, ts)
 
     return q_true_i, q_pred_i, true_time_i, pred_time_i
 
@@ -185,8 +221,8 @@ def one_sample(time_i, robot_i, mask_i, ball_i, throw_idx_i):
 batched_eval = jax.jit(jax.vmap(one_sample, in_axes=(0, 0, 0, 0, 0)))
 
 q_total_true, q_total_pred, total_true_time, total_pred_time = batched_eval(
-    time_eval,
-    robot_eval,
+    time_eval_norm,
+    robot_eval_norm,
     mask_eval,
     ball_eval,
     last_valid_eval,

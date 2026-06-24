@@ -77,7 +77,7 @@ max_test = find_biggest_throw_index(ball_test_c)
 print (max_train , max_test)
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-def find_smallest_flight(ball_c, rest_time=50):
+def find_biggest_flight(ball_c, rest_time=50):
     indices = []
 
     for i in range(ball_c.shape[0]):
@@ -87,8 +87,8 @@ def find_smallest_flight(ball_c, rest_time=50):
 
     return max(indices)
 
-max_train = find_smallest_flight(ball_train_c)
-max_test = find_smallest_flight(ball_test_c)
+max_train = find_biggest_flight(ball_train_c)
+max_test = find_biggest_flight(ball_test_c)
 
 print(max_train, max_test)
 
