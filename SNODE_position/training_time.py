@@ -114,25 +114,24 @@ contact_test = (t_grid < throw_idx_test[:, None]).astype(jnp.float32)
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-idx = 355
-throw_index = (index_train[idx] // 10 ) +1
-throw_idx_train = jnp.sum(contact_train.astype(jnp.int32), axis=1) 
+idx = 120
+throw_index = (index_test[idx] // 10 ) +1
+throw_idx_test = jnp.sum(contact_test.astype(jnp.int32), axis=1) 
 
-print (throw_index , throw_idx_train[idx])
+print (throw_index , throw_idx_test[idx])
 
 #%%
 k=-2
 for i in range(4):
     print (k)
-    print (contact_train[idx,throw_index+k])
-    print (ball_train[idx,throw_index+ k , 3:6])
+    print (contact_test[idx,throw_index+k])
+    print (ball_test[idx,throw_index+ k , 3:6])
     i=i+1
     k=k+1
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-idx = 302  # choose sample
 
-traj = robot_train_input[idx]   # shape (84, 12)
+traj = robot_test_input[idx]   # shape (84, 12)
 
 x = traj[:, 0]
 y = traj[:, 1]
@@ -145,8 +144,8 @@ plt.figure(figsize=(8,5))
 plt.plot(t, x, label='x')
 plt.plot(t, y, label='y')
 plt.plot(t, z, label='z')
-plt.plot(t, contact_train[idx] , label='contact')
-plt.plot(t , mask_train[idx], label='mask')
+plt.plot(t, contact_test[idx] , label='contact')
+plt.plot(t , mask_test[idx], label='mask')
 
 
 plt.xlabel('index')
@@ -157,22 +156,24 @@ plt.legend()
 plt.show()
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-class ThrowTimeModel(eqx.Module):
-    encoder: NODE
-    ode: ODESolver
+class GRUThrowTimeModel(eqx.Module):
+    gru: eqx.nn.GRUCell
     head: eqx.nn.MLP
-    latent_dim: int = eqx.field(static=True)
+    hidden_size: int = eqx.field(static=True)
 
-    def __init__(self, node, ode, key, latent_dim):
+    def __init__(self, input_size, hidden_size, key):
         key1, key2 = jr.split(key, 2)
 
-        self.encoder = node
-        self.ode = ode
-        self.latent_dim = latent_dim
+        self.hidden_size = hidden_size
+
+        self.gru = eqx.nn.GRUCell(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            key=key1,
+        )
 
         self.head = eqx.nn.MLP(
-            in_size=4*latent_dim,
+            in_size=hidden_size,
             out_size=1,
             width_size=64,
             depth=2,
@@ -180,28 +181,30 @@ class ThrowTimeModel(eqx.Module):
             key=key2,
         )
 
-    def __call__(self, ts_robot, u_robot):
-        h0 = jnp.zeros((self.latent_dim,))
-        h = self.ode(ts_robot, h0, us=u_robot)
+    def __call__(self, robot_seq):
+        # robot_seq: (T, input_size)
 
-        #h_final = h[-1]
-        feature = jnp.concatenate([
-                h[-1],
-                jnp.mean(h, axis=0),
-                jnp.max(h, axis=0),
-                jnp.min(h, axis=0),
-                ])
-        t_hat = jnp.ravel(self.head(feature))[0]
+        h0 = jnp.zeros((self.hidden_size,))
 
+        def step(h, x):
+            h_new = self.gru(x, h)
+            return h_new, h_new
+
+        h_final, h_all = jax.lax.scan(step, h0, robot_seq)
+
+        t_hat = jnp.ravel(self.head(h_final))[0]
         return t_hat
-
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-latent_dim =16
-key = jr.key(0)
-n_key , j_key , r_key , g_key , m_key = jr.split(key , 5)
-nn = NODE(state_size=latent_dim , input_size=12, width_sizes=[64,64,64], key=key)
-ode = ODESolver(nn)
-model = ThrowTimeModel( nn , ode, latent_dim=latent_dim , key=m_key)
+input_size = robot_train_input.shape[-1]   # probably 12
+hidden_size = 128
+
+key = jr.key(11)
+
+model_gru = GRUThrowTimeModel(
+    input_size=input_size,
+    hidden_size=hidden_size,
+    key=key,
+)
 
 
 def make_time_start_zero(robot_time, mask):
@@ -229,21 +232,15 @@ def make_time_start_zero(robot_time, mask):
 
     return time_final
 
-time_train = make_time_start_zero(robot_time_train, mask_train)
-time_test  = make_time_start_zero(robot_time_test, mask_test)
+time_train = make_time_start_zero(robot_time_train_norm, mask_train)
+time_test  = make_time_start_zero(robot_time_test_norm, mask_test)
 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-throw_idx_train = jnp.sum(contact_train.astype(jnp.int32), axis=1)
-
 t_throw_train = time_train[
     jnp.arange(time_train.shape[0]),
     throw_idx_train
 ]
-
-throw_idx_test = jnp.sum(contact_test.astype(jnp.int32), axis=1) 
-
 t_throw_test = time_test[
     jnp.arange(time_test.shape[0]),
     throw_idx_test
@@ -252,14 +249,12 @@ t_throw_test = time_test[
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 @klax.loss
-def loss_throw_time(model, data, batch_axis):
-    robot_ts, robot_batch, t_throw_batch = data
+def loss_gru_throw_time(model, data, batch_axis):
+    robot_batch, t_throw_batch = data
 
-    t_pred = jax.vmap(model, in_axes=(0, 0))(
-        robot_ts, robot_batch
-    )
+    t_pred = jax.vmap(model)(robot_batch)
 
-    loss = jnp.mean(jnp.square(t_pred - t_throw_batch))
+    loss = jnp.mean((t_pred - t_throw_batch) ** 2)
 
     return loss
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -270,65 +265,69 @@ class RunStateUpdater(klax.Callback):
         context.state.run_state = context.state.step
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-model , hist_traj = klax.fit(
-    model,
-    (time_train, robot_train_input, t_throw_train),
-    validation_data=(time_test, robot_test_input, t_throw_test),
+
+model_gru, hist_gru = klax.fit(
+    model_gru,
+    (robot_train_input_norm, t_throw_train),
+    validation_data=(robot_test_input_norm, t_throw_test),
     run_state=0,
     batch_size=64,
     optimizer=optax.adam(1e-4),
-    loss= loss_throw_time,
-    steps=10000,
+    loss=loss_gru_throw_time,
+    steps=20000,
     verbose=True,
     callbacks=[RunStateUpdater()],
     log_every=50,
-    key=jr.key(0)
+    key=jr.key(5),
 )
 
-hist_traj.plot()
+hist_gru.plot()
 plt.show()
 
-
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-model_ = klax.finalize(model)
-idx = 103
-t_pred= model_(time_test[idx] ,robot_test_input[idx])
-
-
-print(t_pred, t_throw_test[idx])
-
-
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-DT = 0.002
-ts = jnp.arange(2500) * DT
-
-
-N_eval = 2000
-
-time_eval = time_test[:N_eval]
-robot_eval = robot_test_input[:N_eval]
-throw_eval = t_throw_test[:N_eval]
-
-
-def one_sample(time_i, robot_i, t_throw_i):
-    throw_pred_i= model_(time_i, robot_i)
-    
-    
-
-    return throw_pred_i , t_throw_i
-
-
-batched_eval = jax.jit(jax.vmap(one_sample, in_axes=(0, 0 ,0)))
-
-throw_pred , throw_true= batched_eval(
-    time_eval,
-    robot_eval,
-    throw_eval
+model_gru, hist_gru = klax.fit(
+    model_gru,
+    (robot_train_input_norm, t_throw_train),
+    validation_data=(robot_test_input_norm, t_throw_test),
+    run_state=0,
+    batch_size=64,
+    optimizer=optax.adam(3e-5),
+    loss=loss_gru_throw_time,
+    steps=20000,
+    verbose=True,
+    callbacks=[RunStateUpdater()],
+    log_every=50,
+    key=jr.key(5),
 )
 
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+hist_gru.plot()
+plt.show()
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+model_gru_ = klax.finalize(model_gru)
+idx=6
+pred = model_gru(robot_test_input_norm[idx])
+print (pred , t_throw_test[idx])
+
+pred_denorm = ball_norm.inverse_transform_ts(pred)
+true_denorm = ball_norm.inverse_transform_ts(t_throw_test[idx])
+
+print (pred_denorm , true_denorm)
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+N_eval = 2000
+
+robot_eval = robot_test_input_norm[:N_eval]
+throw_eval = t_throw_test[:N_eval]
+
+throw_pred = jax.jit(jax.vmap(model_gru_))(robot_eval)
+throw_true = throw_eval
+
+pred_denorm = ball_norm.inverse_transform_ts(throw_pred)
+true_denorm = ball_norm.inverse_transform_ts(throw_eval)
+
+diff = np.array(jnp.abs(pred_denorm - true_denorm))
+
 D = 0.04
-diff = np.array(jnp.abs(throw_pred - throw_true))
+
 error_small = diff[diff <= D]
 error_large = diff[diff > D]
 
@@ -347,6 +346,9 @@ plt.tight_layout()
 plt.show()
 
 print(f"% within {D:.3f}s = {100*np.mean(diff <= D):.1f}%")
+
+
+
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 # --- de-normalize time
 #time_denorm_train = ball_norm.inverse_transform_ts(time_train)
@@ -366,7 +368,12 @@ plt.show()
 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-eqx.tree_serialise_leaves("trained_model_time_1.eqx", model_)
+eqx.tree_serialise_leaves("saved_models/time/trained_model_time_6.eqx", model_gru_)
 
+np.save(
+    "saved_models/time/training_history_time_6.npy",
+    hist_gru,
+    allow_pickle=True,
+)
 
 # %%
