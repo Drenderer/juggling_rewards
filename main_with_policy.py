@@ -25,16 +25,13 @@ MAX_CTRL = np.array([150.0, 125.0,  40.0,  60.0]) #
 def get_policy(q1 , q2 , q4 , t):                      
     
     q_via_stroke = np.array([[ q1[0] , q2[0] , 0 , q4[0]],
-                            [q1[1],  q2[1] , 0 , q4[1]],
-                            [q1[2],   q2[2],    0, q4[2]],
-                            [ q1[3],    q2[3],    0   , q4[3]]])
+                            [q1[1],  q2[1] , 0 , q4[1]]])
+                
     
     dq_via_stroke = np.array([[0,  0,  0  ,  0],
-                              [0,  0,  0  ,  0],
-                              [0,  0,  0  ,  0],
-                              [0,  0,  0,  0]])
-    t = t.at[0].set(t[0] + 0.1)
-    times_stroke = np.array([ t[0] , t[0] + t[1] , t[0] + t[1] + t[2]])
+                              [0,  0,  0  ,  0],])
+    
+    times_stroke = np.array([t])
     
     policy_wait = ConstantMP(pos=q_via_stroke[0], duration=t_rest*DT)   #the original duration was 0.1
     policy_stroke = CubicMP(q_via_stroke, dq_via_stroke, times_stroke, cyclic=False) 
@@ -67,7 +64,7 @@ def pd_control(robot, q_des, dq_des):
     tau = Kp * (q_des - q) + Kd * (dq_des - dq)
     return np.clip(tau, -MAX_CTRL, MAX_CTRL)
 
-
+'''
 def get_ball_contact_force(model, data, ball_body_id):
     f1 = 0.0
     f2 = 0.0
@@ -100,35 +97,32 @@ def get_ball_contact(model, data, ball_body_id):
         return 0 
 
 
+'''
 
 def main():
     seed = int(time.time())
     key = jr.PRNGKey(seed)
     k1, k2, k3 ,k4 = jr.split(key, 4)
 
-    q1 = jr.uniform(k1 , shape=(4,) , minval=-0.25 , maxval=0.25)
-    q2 = jr.uniform(k2 , shape=(4,) , minval= 0.65 , maxval=1.45)
-    q4 = jr.uniform(k3 , shape=(4,) , minval=0.65 , maxval=1.45)
-    t = jr.uniform(k4, shape=(3,) , minval=0.1 , maxval=0.4 )
+    q1 = jr.uniform(k1 , shape=(2,) , minval=-0.3 , maxval=0.3)
+    q2 = jr.uniform(k2 , shape=(2,) , minval= 0.65 , maxval=1.45)
+    q4 = jr.uniform(k3 , shape=(2,) , minval=0.65 , maxval=1.45)
+    #t = jr.uniform(k4, shape=(1,) , minval=0.2 , maxval=0.4 )
 
-    #q1 = np.round(q1, 3)
-    #q2 = np.round(q2, 3)
-    #q4 = np.round(q4, 3)
-    #t = np.round(t ,3)
 
     #q1 = np.array([-0.7 , -0.7 , 0.087 , -0.088])
     #q2 = np.array([1.2 ,1.2 , 1.2 , 1.2])
     #q4 = np.array([0.856 , 1.006 , 0.564 , 0.629])
     
-    print (q1 , q2 , q4 , t)
-    policy = get_policy(q1  , q2 , q4 , t)
+    print (q1 , q2 , q4 )
+    policy = get_policy(q1  , q2 , q4 , 0.3)
     model = mj.MjModel.from_xml_path(str(XML_PATH))
     data = mj.MjData(model)
     viewer = get_viwer(model, data)
     env = MjEnvironment(model, data, viewer)
 
     arm = Arm(model, data, 'wam')
-    ball0 = Ball(model, data, 0)
+    #ball0 = Ball(model, data, 0)
    
     # find the ball_id and ball size
     ball_body_id = mj.mj_name2id(model, mj.mjtObj.mjOBJ_BODY, "balls/ball0")
@@ -152,7 +146,7 @@ def main():
 
     mj.mj_forward(model, data)
     #ball0.x = arm.x + np.array([0.0, 0.0, 0.01])
-    ball0.x = arm.x + np.array([0.0, 0.0, 0.0])
+    #ball0.x = arm.x + np.array([0.0, 0.0, 0.0])
 
     key = jr.key(33)  
     ts = np.linspace(0, 10, 5000)
@@ -161,16 +155,16 @@ def main():
     ts ,us, ys, ys_t ,ys_tt = [],[],[],[],[]
     ball_force , ball_contact = [],[]
 
-    while env.time <= 5.0:
+    while env.time <= 1.0:
         q, dq = policy(k * DT)
         tau = pd_control(arm, q, dq)
         arm.tau = tau  
-        ball0.record_state()
+        #ball0.record_state()
         env.step()
         env.render()
     
-        contact_forces = get_ball_contact_force(model , data , ball_body_id)
-        contact = get_ball_contact(model , data , ball_body_id)
+        #contact_forces = get_ball_contact_force(model , data , ball_body_id)
+        #contact = get_ball_contact(model , data , ball_body_id)
         k += 1
     
         ts.append(env.time)
@@ -178,22 +172,22 @@ def main():
         ys.append(arm.q)
         ys_t.append(arm.dq)
         ys_tt.append(arm.ddq)
-        ball_force.append (contact_forces)
-        ball_contact.append (contact)
+        #ball_force.append (contact_forces)
+        #ball_contact.append (contact)
         
 
-    xb0, dxb0 = ball0.get_recording()
+    #xb0, dxb0 = ball0.get_recording()
     ts = np.array(ts)
     us = np.array(us)
     ys = np.array(ys)
     ys_t = np.array(ys_t)
     ys_tt = np.array(ys_tt)
-    xb0 = np.array(xb0)
-    dxb0 = np.array(dxb0)
-    ball_force = np.array(ball_force)
-    ball_contact = np.array(ball_contact)
+    #xb0 = np.array(xb0)
+    #dxb0 = np.array(dxb0)
+    #ball_force = np.array(ball_force)
+    #ball_contact = np.array(ball_contact)
     
-
+    '''
     idx_throw = np.where(ball_contact[t_rest:] == 0)[0]
     idx=None
     for i in range(len(idx_throw) - 100):
@@ -242,14 +236,15 @@ def main():
     ax.set_xlabel("time [s]")
     ax.grid(True)
     plt.show()
+    '''
 
     fig, axes = plt.subplots(3, 1)
-    axes[0].plot(ts[:idx], us[:idx])
-    axes[1].plot(ts[:idx], ys[:idx])
-    axes[2].plot(ts[:idx] ,ys_t[:idx])
+    axes[0].plot(ts, us)
+    axes[1].plot(ts, ys)
+    axes[2].plot(ts ,ys_t)
     plt.show()
 
-    print ("ball velocity in z direction is :" , dxb0[idx , 2])
+    #print ("ball velocity in z direction is :" , dxb0[idx , 2])
 
 if __name__ == '__main__':
     main()
