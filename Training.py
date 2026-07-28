@@ -63,57 +63,77 @@ test_dq_norm = norm.transform_q_ts(test_dq)
 test_ddq_norm = norm.transform_q_tts(test_ddq)
 test_u_norm = norm.transform_taus(test_u)
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+@eqx.filter_vmap
+def make_sphnn(key):
+    ficnn_key , h_key , j_key , r_key , g_key = jr.split(key , 5)
 
+    ficnn =FICNN(in_size=8 , out_size='scalar' , width_sizes=[64,128,64] , key = ficnn_key)
+    H = ConvexLyapunov(ficnn , state_size= 8 , minimum_learnable=True , key = h_key )
+    J = ConstantSkewSymmetricMatrix((8,8) , key = j_key)
+    R = ConstantSPDMatrix ((8,8) ,key=r_key)
+    G = ConstantMatrix ( (8,4) , key =g_key)
+
+    isphs = ISPHS( H , J , R, G)
+    sphnn = ODESolver(isphs)
+    sphnn_ = klax.finalize(sphnn)
+
+    return sphnn_
 
 key = jr.key(0)
-ficnn_key , h_key , j_key , r_key , g_key = jr.split(key , 5)
+n_models = 5
+model_keys = jr.split(key, n_models)
+sphnn_ensemble = make_sphnn(model_keys)
 
-ficnn =FICNN(in_size=8 , out_size='scalar' , width_sizes=[64,128,64] , key = ficnn_key)
-H = ConvexLyapunov(ficnn , state_size= 8 , minimum_learnable=True , key = h_key )
-J = ConstantSkewSymmetricMatrix((8,8) , key = j_key)
-R = ConstantSPDMatrix ((8,8) ,key=r_key)
-G = ConstantMatrix ( (8,4) , key =g_key)
+@eqx.filter_vmap(
+    in_axes=(eqx.if_array(0), None, None, None)
+)
+def evaluate_ensemble(model, ts, x0, u):
+    return model(ts, x0, u)
 
-isphs = ISPHS( H , J , R, G)
-sphnn = ODESolver(isphs)
-
-
-sphnn_ = klax.finalize(sphnn)
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 idx =10
 init = jnp.concatenate([test_q_norm[idx , 0] , test_dq_norm[idx,0]])
-pred_norm = sphnn_ (test_t_norm[idx] , init , test_u_norm[idx])
+pred_norm = evaluate_ensemble(
+    sphnn_ensemble,
+    test_t_norm[idx],
+    init,
+    test_u_norm[idx],
+)
 
-pred_x_norm = pred_norm[:,:4]
-pred_dx_norm = pred_norm[:,4:]
+pred_x_norm = pred_norm[:,:,:4]
+pred_dx_norm = pred_norm[:,:,4:]
 
 pred_x = norm.inverse_transform_qs(pred_x_norm)
 pred_dx = norm.inverse_transform_q_ts(pred_dx_norm)
 
 for i in range(4):
-    plt.figure()
-    plt.plot(test_t[idx,:], test_q[idx, :, i], lw=1.6, label="True")
-    plt.plot(test_t[idx,:], pred_x[:, i], "--", lw=1.2, label="Direct Predicted SPHNN")
+
+    plt.figure(figsize=(8, 4))
+
+    plt.plot(test_t[idx],test_q[idx, :, i],color="black",linewidth=2,label="True")
+
+    for m in range(n_models):
+        plt.plot(test_t[idx],pred_x[m, :, i],"--",linewidth=1.2,alpha=0.8,label=f"model {m+1}")
+
     plt.xlabel("t [s]")
     plt.ylabel(rf"$q_{i+1}$")
-    plt.title(f"DoF {i+1} Position: True vs Predicted")
+    plt.title(f"DoF {i+1}")
+    plt.grid(alpha=0.3)
     plt.legend()
-    plt.grid(True, alpha=0.3)
 
 plt.show()
-
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 state = jnp.concat([train_q_norm , train_dq_norm] , axis = -1)
 state_deriv= jnp.concat([train_dq_norm , train_ddq_norm] , axis = -1)
 
-print (state.shape , state_deriv.shape)
+
 state_flat = jnp.reshape(state, (-1, state.shape[-1]))
 state_deriv_flat = jnp.reshape(state_deriv, (-1, state_deriv.shape[-1]))
 input_flat = jnp.reshape(train_u_norm, (-1, train_u_norm.shape[-1]))
 
-print (state_flat.shape)
+
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 @klax.loss
 def derivative_loss(model, data, batch_axis):
@@ -126,48 +146,60 @@ def derivative_loss(model, data, batch_axis):
     return jnp.mean(jnp.square(pred - y_ts))
 
 class RunStateUpdater(klax.Callback):
-    """Updates the run_state to be the training step."""
-    
+    """Update run_state with the current training step."""
+
     def on_training_step(self, context):
-        context.state.run_state = context.state.step
+        context.state.run_state = context.step
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-sphnn_, hist = klax.fit(
-    sphnn_,
+sphnn_ensemble, hist = klax.fit(
+    sphnn_ensemble,
     (state_flat, state_deriv_flat, input_flat),
     batch_size=32,
     optimizer=optax.adam(2e-4),
     loss=derivative_loss,
-    steps=100_000,
+    steps=50_000,
     verbose=True,
     callbacks=[RunStateUpdater()],
     log_every=100,
-    key=jr.key(0)
+    vmap_ensemble=True,
+    key=jr.key(1)
 )
 
 hist.plot()
 plt.show()
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-idx = 35
+idx = 10
 init = jnp.concatenate([test_q_norm[idx , 0] , test_dq_norm[idx,0]])
-pred_norm = sphnn_ (test_t_norm[idx] , init , test_u_norm[idx])
+pred_norm = evaluate_ensemble(
+    sphnn_ensemble,
+    test_t_norm[idx],
+    init,
+    test_u_norm[idx],
+)
 
-pred_x_norm = pred_norm[:,:4]
-pred_dx_norm = pred_norm[:,4:]
+
+pred_x_norm = pred_norm[:,:,:4]
+pred_dx_norm = pred_norm[:,:,4:]
 
 pred_x = norm.inverse_transform_qs(pred_x_norm)
 pred_dx = norm.inverse_transform_q_ts(pred_dx_norm)
 
 for i in range(4):
-    plt.figure()
-    plt.plot(test_t[idx,:], test_q[idx, :, i], lw=1.6, label="True")
-    plt.plot(test_t[idx,:], pred_x[:, i], "--", lw=1.2, label="Direct Predicted SPHNN")
+
+    plt.figure(figsize=(8, 4))
+
+    plt.plot(test_t[idx],test_q[idx, :, i],color="black",linewidth=2,label="True")
+
+    for m in range(n_models):
+        plt.plot(test_t[idx],pred_x[m, :, i],"--",linewidth=1.2,alpha=0.8,label=f"model {m+1}")
+
     plt.xlabel("t [s]")
     plt.ylabel(rf"$q_{i+1}$")
-    plt.title(f"DoF {i+1} Position: True vs Predicted")
+    plt.title(f"DoF {i+1}")
+    plt.grid(alpha=0.3)
     plt.legend()
-    plt.grid(True, alpha=0.3)
 
 plt.show()
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -179,93 +211,67 @@ def trajectory_loss(model, data, batch_axis):
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 t_list = [50,100,200,400,500]
+step_list = [5000 , 5000 , 5000 , 3000 , 2000]
 
 state_test = jnp.concat([test_q_norm , test_dq_norm] , axis = -1)
 
 
 for i in range(len(t_list)):
-    sphnn, hist = klax.fit(
-    sphnn,
-    (train_t_norm[:10,:t_list[i]], state[:10,:t_list[i]], train_u_norm[:10,:t_list[i]]),
+    sphnn_ensemble, hist = klax.fit(
+    sphnn_ensemble,
+    (train_t_norm[:,:t_list[i]], state[:,:t_list[i]], train_u_norm[:,:t_list[i]]),
     validation_data=(test_t_norm[:,:t_list[i]], state_test[:,:t_list[i]], test_u_norm[:,:t_list[i]]),
-    batch_size=10,
+    batch_size=32,
     optimizer=optax.adam(2e-4),
     loss=trajectory_loss,
-    steps=5000,
+    steps=step_list[i],
     verbose=True,
     callbacks=[RunStateUpdater()],
     log_every=50,
+    vmap_ensemble=True,
     key=jr.key(0)
 )
     hist.plot()
     plt.show()
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-idx =3
-sphnn_ = klax.finalize(sphnn)
-init = jnp.concatenate([train_q_norm[idx , 0] , train_dq_norm[idx,0]])
-pred_norm = sphnn_ (train_t_norm[idx] , init , train_u_norm[idx])
+idx = 10
+init = jnp.concatenate([test_q_norm[idx , 0] , test_dq_norm[idx,0]])
+pred_norm = evaluate_ensemble(
+    sphnn_ensemble,
+    test_t_norm[idx],
+    init,
+    test_u_norm[idx],
+)
 
-pred_x_norm = pred_norm[:,:4]
-pred_dx_norm = pred_norm[:,4:]
+
+pred_x_norm = pred_norm[:,:,:4]
+pred_dx_norm = pred_norm[:,:,4:]
 
 pred_x = norm.inverse_transform_qs(pred_x_norm)
 pred_dx = norm.inverse_transform_q_ts(pred_dx_norm)
 
-fig, axes = plt.subplots(1, 4, figsize=(18, 4), sharex=True, sharey=False)
+for i in range(4):
 
-for i, ax in enumerate(axes):
-    ax.plot(train_t[idx], train_q[idx, :, i], lw=2, label="True")
-    ax.plot(train_t[idx], pred_x[:, i], "--", lw=2, label="Prediction")
+    plt.figure(figsize=(8, 4))
 
-    ax.set_title(f"$q_{i+1}$")
-    ax.grid(alpha=0.3)
+    plt.plot(test_t[idx],test_q[idx, :, i],color="black",linewidth=2,label="True")
 
-axes[0].set_ylabel("Joint Position [rad]")
+    for m in range(n_models):
+        plt.plot(test_t[idx],pred_x[m, :, i],"--",linewidth=1.2,alpha=0.8,label=f"model {m+1}")
 
-for ax in axes:
-    ax.set_xlabel("Time [s]")
+    plt.xlabel("t [s]")
+    plt.ylabel(rf"$q_{i+1}$")
+    plt.title(f"DoF {i+1}")
+    plt.grid(alpha=0.3)
+    plt.legend()
 
-axes[0].legend()
-
-plt.tight_layout()
 plt.show()
+
+
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-
-plt.figure(figsize=(10, 6))
-
-colors = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
-
-for i in range(4):
-    plt.plot(
-        test_t[idx],
-        test_q[idx, :, i],
-        color=colors[i],
-        lw=2,
-        label=f"True $q_{i+1}$",
-    )
-
-    plt.plot(
-        test_t[idx],
-        pred_x[:, i],
-        "--",
-        color=colors[i],
-        lw=2,
-        label=f"Pred $q_{i+1}$",
-    )
-
-plt.xlabel("Time [s]")
-plt.ylabel("Joint Position [rad]")
-plt.title("Robot Joint Positions: True vs Predicted")
-plt.grid(alpha=0.3)
-
-plt.legend(ncol=2)
-plt.tight_layout()
-plt.show()
-
-#%%%%
-eqx.tree_serialise_leaves("saved_models/sphnn_over.eqx", sphnn_)
+eqx.tree_serialise_leaves("saved_models/sphnn_ensemble1.eqx",sphnn_ensemble)
 
 
 

@@ -20,3 +20,4 @@ dependencies = [
 [tool.uv.sources]
 cyberplotstyle = { git = "https://github.com/Drenderer/cyberplotstyle.git", rev = "d1e70a7574f73c81744a438777faeadbd436c9b7" }
 dynax = { git = "https://github.com/Drenderer/dynax.git", rev = "228a16a4806307331654bf1a175a401835681917" }
+klax = { git = "https://github.com/Drenderer/klax.git", rev = "dev" }

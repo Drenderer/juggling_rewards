@@ -551,7 +551,7 @@ requires-dist = [
     { name = "imageio", specifier = ">=2.37.3" },
     { name = "ipykernel", specifier = ">=7.2.0" },
     { name = "ipywidgets", specifier = ">=8.1.8" },
-    { name = "klax", specifier = ">=0.2.0" },
+    { name = "klax", git = "https://github.com/Drenderer/klax.git?rev=dev" },
     { name = "matplotlib", specifier = ">=3.10.9" },
     { name = "mujoco", specifier = ">=3.8.0" },
     { name = "scipy", specifier = "==1.18.0" },
@@ -685,15 +685,11 @@ wheels = [
 [[package]]
 name = "klax"
 version = "0.2.0"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/Drenderer/klax.git?rev=dev#5e8856e80a9776f0e293c14bcbf417696ce5ed82" }
 dependencies = [
     { name = "equinox" },
     { name = "jax" },
     { name = "optax" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/9d/fd/828b71861585e47931901ace6432eacd7feebfd054df022d64979e47ca65/klax-0.2.0.tar.gz", hash = "sha256:5ac818c6fdd44edd78672473c4460df1c7d277b64885e72783c9defc51f39752", size = 3432361, upload-time = "2026-05-05T09:03:35.713Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/a9/99/2d489b4a9d14ad5da989d8873eede0cb3d5f93582022ac75d831a70a561a/klax-0.2.0-py3-none-any.whl", hash = "sha256:146306d0fbe9a1f3f48a9b05c9964d5a461fab2eb2c08d3cc86eaf25d69ee171", size = 53975, upload-time = "2026-05-05T09:03:37.229Z" },
 ]
 
 [[package]]
