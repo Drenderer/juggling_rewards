@@ -6,20 +6,16 @@ import optax
 import numpy as np
 from jax import numpy as jnp
 from jax import random as jr
-
-from dynax import ISPHS, ConvexLyapunov, ODESolver
-from klax.nn import (
-    FICNN,
-    ConstantMatrix,
-    ConstantSkewSymmetricMatrix,
-    ConstantSPDMatrix,
-)
+from matplotlib import pyplot as plt
 
 from pathlib import Path
-from normalize import Normalization, coefficients
-from matplotlib import pyplot as plt
+from mpc_robot.models.sphnn import make_sphnn
+from mpc_robot.datagen.normalize import Normalization
+
+
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-data_robot = np.load("Data_MPC/robot_train.npz")
+ROOT = Path(__file__).resolve().parents[1]
+data_robot = np.load(ROOT/"Data_MPC/robot_train.npz")
 train_t = data_robot['time']
 train_q = data_robot['robot_q']
 train_dq = data_robot['robot_dq']
@@ -28,7 +24,7 @@ train_u = data_robot['robot_u']
 
 print (train_t.shape,train_q.shape , train_ddq.shape , train_u.shape)
 
-data_robot = np.load("Data_MPC/robot_test.npz")
+data_robot = np.load(ROOT/"Data_MPC/robot_test.npz")
 test_t = data_robot['time']
 test_q = data_robot['robot_q']
 test_dq = data_robot['robot_dq']
@@ -37,7 +33,7 @@ test_u = data_robot['robot_u']
 
 print (test_t.shape,test_q.shape , test_ddq.shape , test_u.shape)
 
-data = np.load('Data_MPC/norm_value.npz')
+data = np.load(ROOT/'Data_MPC/norm_value.npz')
 mean_q = data['mean_q']
 alpha_q = data['alpha_q']
 tau_q = data['tau_q']
@@ -63,35 +59,18 @@ test_dq_norm = norm.transform_q_ts(test_dq)
 test_ddq_norm = norm.transform_q_tts(test_ddq)
 test_u_norm = norm.transform_taus(test_u)
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-@eqx.filter_vmap
-def make_sphnn(key):
-    ficnn_key , h_key , j_key , r_key , g_key = jr.split(key , 5)
-
-    ficnn =FICNN(in_size=8 , out_size='scalar' , width_sizes=[64,128,64] , key = ficnn_key)
-    H = ConvexLyapunov(ficnn , state_size= 8 , minimum_learnable=True , key = h_key )
-    J = ConstantSkewSymmetricMatrix((8,8) , key = j_key)
-    R = ConstantSPDMatrix ((8,8) ,key=r_key)
-    G = ConstantMatrix ( (8,4) , key =g_key)
-
-    isphs = ISPHS( H , J , R, G)
-    sphnn = ODESolver(isphs)
-    sphnn_ = klax.finalize(sphnn)
-
-    return sphnn_
-
 key = jr.key(0)
 n_models = 5
 model_keys = jr.split(key, n_models)
-sphnn_ensemble = make_sphnn(model_keys)
+sphnn_ensemble = eqx.filter_vmap(make_sphnn)(model_keys)
 
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 @eqx.filter_vmap(
     in_axes=(eqx.if_array(0), None, None, None)
 )
 def evaluate_ensemble(model, ts, x0, u):
     return model(ts, x0, u)
 
-
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 idx =10
 init = jnp.concatenate([test_q_norm[idx , 0] , test_dq_norm[idx,0]])
 pred_norm = evaluate_ensemble(

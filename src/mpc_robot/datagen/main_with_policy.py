@@ -8,15 +8,15 @@ from mujoco_environment import MjEnvironment, MjViewer, Arm, Ball
 import matplotlib.pyplot as plt
 from dynax import bandlimited_noise
 import jax.random as jr
-import jax
 from jax import random as jr
 
 
 
 DT = 0.002 #simulation time step
 t_rest = int(0.1/DT)
-XML_PATH = Path(__file__).parent / 'robot_description' / 'one_arm.xml'
-
+#XML_PATH = Path(__file__).parent / 'robot_description' / 'one_arm.xml'
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+XML_PATH = PROJECT_ROOT / "robot_description" / "one_arm.xml"
 
 Kp  = np.array([200.0, 300.0, 100.0, 100.0])
 Kd  = np.array([  7.0,  15.0,   5.0,   2.5])

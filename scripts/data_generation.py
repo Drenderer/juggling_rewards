@@ -6,8 +6,8 @@ from jax import numpy as jnp
 from jax import random as jr
 from dynax import bandlimited_noise
 
-from main_with_policy import XML_PATH, get_policy , get_viwer , pd_control 
-from mujoco_environment import Arm , Ball , MjEnvironment
+from src.datagen.main_with_policy import XML_PATH, get_policy , get_viwer , pd_control 
+from src.datagen.mujoco_environment import Arm , Ball , MjEnvironment
 
 
 DT = 0.002  # Time step for the simulation

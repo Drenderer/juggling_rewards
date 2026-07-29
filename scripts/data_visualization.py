@@ -1,8 +1,6 @@
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 import numpy as np
-import jax
 import matplotlib.pyplot as plt
-#from helping_function import hitting , find_throwing , Forward_kinematic
 from jax import numpy as jnp
 
 
