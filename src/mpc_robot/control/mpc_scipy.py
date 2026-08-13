@@ -9,12 +9,6 @@ def mpc_scipy(model,horizon,maxiter,u_min,u_max,warm_start=True):
 
     input_dim = u_min.shape[0]
     jax_dtype = jnp.asarray(u_min).dtype
-
-    u_min_np = np.asarray(u_min, dtype=np.float64)
-    u_max_np = np.asarray(u_max, dtype=np.float64)
-
-    bounds = list(zip(np.tile(u_min_np, horizon),np.tile(u_max_np, horizon)))
-
     def rollout(ts, x0, u):
         u_sequence = jnp.concatenate([u, u[-1:]],axis=0)
         return model(ts, x0, u_sequence)[1:]
@@ -36,13 +30,10 @@ def mpc_scipy(model,horizon,maxiter,u_min,u_max,warm_start=True):
             evaluation_losses.append(float(loss))
             return (float(loss),np.asarray(gradient,dtype=np.float64).ravel())
 
-        result = minimize(objective,np.asarray(u_initial,dtype=np.float64,).ravel(),
+        result = minimize(objective,np.asarray(u_initial,dtype=np.float64).ravel(),
             method="L-BFGS-B",
             jac=True,
-            bounds=bounds,
-            options={
-                "maxiter": maxiter,
-            },
+            options={"maxiter": maxiter},
         )
 
         u_opt = jnp.asarray(result.x,dtype=jax_dtype,).reshape(horizon, input_dim)

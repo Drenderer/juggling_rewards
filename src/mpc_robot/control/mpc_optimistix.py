@@ -1,40 +1,29 @@
 
 import jax
-import optax
+import optimistix
 from jax import numpy as jnp
 
-def mpc_optax(model, horizon, loss_fn, opt_steps, learning_rate, u_min, u_max , warm_start=True):
+def mpc_optimistix(model, horizon, loss_fn , opt_steps, u_min, u_max , warm_start=True):
 
-    optimizer = optax.adam(learning_rate)
-    loss_and_grad = jax.value_and_grad(loss_fn)
+    solver = optimistix.LBFGS(history_length=10 ,rtol=1e-5 , atol=1e-5)
 
-
-    def solve_mpc(ts, x0, reference, u_initial):
-
-        optimizer_state = optimizer.init(u_initial)
-
-        def optimization_step(carry, _):
-            u, optimizer_state = carry
-            args = (model, ts, x0, reference)
-            loss, gradient = loss_and_grad(u,args)
-            grad_norm = jnp.linalg.norm(gradient)
-            updates, optimizer_state = optimizer.update(gradient, optimizer_state, u)
-            u = optax.apply_updates(u, updates)
-            return (u, optimizer_state), (loss ,  grad_norm)
-
-        (u_opt, _), (loss_history , grad_history) = jax.lax.scan(optimization_step,(u_initial, optimizer_state),xs=None,length=opt_steps)
-
-        return u_opt, loss_history , grad_history
-
-
-
+    @jax.jit
+    def solve_mpc(ts, x0 , reference , u_initial):
+        args = (model,ts,x0,reference)
+        init_loss , init_grad = jax.value_and_grad(loss_fn)(u_initial , args)
+        solution = optimistix.minimise (fn=loss_fn , solver=solver , y0=u_initial , args=args, max_steps=opt_steps , throw=False)
+        u_opt = solution.value
+        final_loss , final_grad = jax.value_and_grad(loss_fn)(u_opt , args)
+        loss = jnp.stack([init_loss , final_loss])
+        grad = jnp.stack([jnp.linalg.norm(init_grad),jnp.linalg.norm(final_grad)])
+        return u_opt, loss ,grad
+    
     @jax.jit
     def run_mpc(ts, true_q, true_dq):
 
         true_state = jnp.concatenate([true_q, true_dq], axis=-1)
         number_of_steps = ts.shape[0]
         dt = ts[-1] - ts[-2]
-
         extra_time = (ts[-1]+ dt * jnp.arange(1, horizon + 1))
         ts_padded = jnp.concatenate([ts, extra_time])
         final_reference = jnp.repeat(true_state[-1:],horizon,axis=0)
@@ -44,7 +33,6 @@ def mpc_optax(model, horizon, loss_fn, opt_steps, learning_rate, u_min, u_max , 
         u_zero = jnp.zeros((horizon, u_min.shape[0]))
         
         def mpc_step(carry, k):
-
             x_current, previous_u = carry
             ts_horizon = jax.lax.dynamic_slice(ts_padded,(k,),(horizon,))
             reference = jax.lax.dynamic_slice(state_padded,(k, 0),(horizon, true_state.shape[1]))
@@ -67,9 +55,8 @@ def mpc_optax(model, horizon, loss_fn, opt_steps, learning_rate, u_min, u_max , 
             output = (x_next,u_current,loss_history , grad_history)
 
             return carry, output
-         
         
-    
+
         _, outputs = jax.lax.scan(mpc_step,(x_initial, u_zero),jnp.arange(number_of_steps - 1))
         
         x_future, u_mpc, loss_history , grad_history = outputs
@@ -80,3 +67,5 @@ def mpc_optax(model, horizon, loss_fn, opt_steps, learning_rate, u_min, u_max , 
     
 
     return run_mpc
+
+            

@@ -13,6 +13,7 @@ from pathlib import Path
 from mpc_robot.datagen.normalize import Normalization
 from mpc_robot.control.mpc_optax import mpc_optax
 from mpc_robot.control.mpc_scipy import mpc_scipy
+from mpc_robot.control.mpc_optimistix import mpc_optimistix
 from mpc_robot.models.sphnn import make_sphnn
 from mpc_robot.evaluation.evaluation_functions import tracking_summary_MPC , input_summary_MPC , loss_history_mpc
 
@@ -46,6 +47,13 @@ alpha_u = data['alpha_u']
 print (mean_q , alpha_q , tau_q , mean_u , alpha_u)
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+'''
+mean_q = jnp.array ([ 3.0824446e-04  ,1.0348490e+00 ,-2.5478503e-04 , 1.1077374e+00])
+alpha_q = jnp.array([14.032105,   9.148059,  73.97785,    6.6424174])
+tau_q = jnp.array([0.071083575])
+mean_u = jnp.array ([-0.07175102, -4.415385,    0.02234944, -1.6326236 ])
+alpha_u= jnp.array([0.22259426, 0.03717444, 0.7678034,  0.10603512]) 
+'''
 
 norm = Normalization(mean_q=mean_q , alpha_q=alpha_q , tau_q=tau_q,
                      mean_u=mean_u , alpha_u=alpha_u)
@@ -62,47 +70,40 @@ test_dq_norm = norm.transform_q_ts(test_dq)
 test_ddq_norm = norm.transform_q_tts(test_ddq)
 test_u_norm = norm.transform_taus(test_u)
 
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 key = jr.key(0)
 sphnn_template = make_sphnn(key)
 
 sphnn = eqx.tree_deserialise_leaves(ROOT/"saved_models/sphnn_selected1.eqx" , sphnn_template)
 sphnn_ = klax.finalize(sphnn)
 
-
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+def loss_function (u , args):
+    model , ts , x0 , reference = args
+    prediciton = model (ts , x0 , u)
+    return jnp.mean(jnp.square(reference - prediciton))
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 horizon = 20
-opt_steps = 40
-lr = 3e-2
+opt_steps = 10
+lr = 1e-2
     
 u_min_norm = jnp.min(test_u_norm,axis=(0, 1))
-
 u_max_norm = jnp.max(test_u_norm,axis=(0, 1))
 
 mpc_model = mpc_optax(
     model=sphnn_,
     horizon=horizon,
-    opt_steps=opt_steps,
+    loss_fn=loss_function,
     learning_rate=lr,
+    opt_steps=opt_steps,
     u_min=u_min_norm,
     u_max=u_max_norm,
-    warm_start=False
+    warm_start=True
 )
-'''
-mpc_model = mpc_scipy(
-    model=sphnn_,
-    horizon=horizon,
-    maxiter=opt_steps,
-    u_min=u_min_norm,
-    u_max=u_max_norm,
-    warm_start=False
-)
-'''
+
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 model = sphnn_
-
 
 def prediction_sample(t_norm , q_norm , dq_norm , u_norm):
 
@@ -122,7 +123,7 @@ def prediction_sample(t_norm , q_norm , dq_norm , u_norm):
     return state_mpc , input_mpc , loss_mpc , state_direct 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-idx = 10
+idx = 11
 size = 500
 state_mpc, input_mpc, loss_mpc ,state_direct = prediction_sample(
     test_t_norm[idx ],
@@ -184,7 +185,7 @@ for i in range(4):
     print(f"q{i+1}:RMSE={rmse_mpc[i]:.4e}")
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
+print (loss_mpc.shape)
 loss_history_mpc(loss_mpc)
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

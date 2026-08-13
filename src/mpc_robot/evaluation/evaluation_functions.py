@@ -22,23 +22,13 @@ def tracking_summary_MPC(state_direct, state_mpc, state_true):
         direct = np.asarray(rmse_direct[:, i])
         mpc = np.asarray(rmse_mpc[:, i])
 
-        x = np.linspace(
-        min(direct.min(), mpc.min()),
-        max(direct.max(), mpc.max()),
-        300,
-        )
-
-        kde_direct = gaussian_kde(direct)
-        kde_mpc = gaussian_kde(mpc)
-
-        ax.plot(x,kde_direct(x),lw=2,color="tab:blue",label="Direct")
-        ax.fill_between(x,kde_direct(x),alpha=0.25,color="tab:blue")
-        ax.plot(x,kde_mpc(x),lw=2,color="tab:orange",label="MPC",)
-        ax.fill_between(x,kde_mpc(x),alpha=0.25,color="tab:orange")
+        bins = np.linspace(min(direct.min(), mpc.min()),max(direct.max(), mpc.max()),20)
+        ax.hist(direct,bins=bins,alpha=0.5,color="tab:blue",label="Direct")
+        ax.hist(mpc,bins=bins,alpha=0.5,color="tab:orange",label="MPC")
 
         ax.set_title(rf"$q_{i+1}$")
         ax.set_xlabel("RMSE [rad]")
-        ax.set_ylabel("Density")
+        ax.set_ylabel("Count")
         ax.grid(alpha=0.3)
 
     axes[0].legend()
@@ -380,25 +370,13 @@ def loss_history_mpc(loss_history):
     mpc_steps = np.arange(loss_history.shape[0])
 
     plt.figure(figsize=(10, 4))
-
-    plt.plot(
-        mpc_steps,
-        loss_history[:, 0],
-        label="Initial loss",
-        linewidth=1.5,
-    )
-
-    plt.plot(
-        mpc_steps,
-        loss_history[:, -1],
-        label="Final loss",
-        linewidth=1.5,
-    )
-
+    plt.plot(mpc_steps,loss_history[:, 0],label="Initial loss",linewidth=1.5)
+    plt.plot(mpc_steps,loss_history[:, -1],label="Final loss",linewidth=1.5)
+    plt.yscale("log")
     plt.xlabel("MPC step")
     plt.ylabel("Loss")
     plt.title("Initial and final MPC loss")
-    plt.grid(True, alpha=0.3)
+    plt.grid(True, which="both", alpha=0.3)
     plt.legend()
     plt.tight_layout()
     plt.show()
@@ -406,33 +384,12 @@ def loss_history_mpc(loss_history):
     # ==========================================================
     # Convergence for selected MPC steps
     # ==========================================================
-    selected_steps = np.linspace(
-        0,
-        loss_history.shape[0] - 1,
-        5,
-        dtype=int,
-    )
-
-    opt_iterations = np.arange(
-        1,
-        loss_history.shape[1] + 1,
-    )
-
-    fig, axes = plt.subplots(
-        1,
-        len(selected_steps),
-        figsize=(18, 4),
-        sharey=False,
-    )
-
+    selected_steps = np.linspace(0,loss_history.shape[0] - 1,5,dtype=int)
+    opt_iterations = np.arange(1,loss_history.shape[1] + 1)
+    fig, axes = plt.subplots(1,len(selected_steps),figsize=(18, 4),sharey=False)
     for ax, step in zip(axes, selected_steps):
 
-        ax.plot(
-            opt_iterations,
-            loss_history[step],
-            marker="o",
-        )
-
+        ax.plot(opt_iterations,loss_history[step],marker="o")
         ax.set_title(f"time step {step}")
         ax.set_xlabel("Optimisation step")
         ax.set_ylabel("Loss")

@@ -2,11 +2,13 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from jax import numpy as jnp
+from pathlib import Path
 
 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-data_robot = np.load("Data_MPC/robot_data.npz")
+ROOT = Path(__file__).resolve().parents[1]
+data_robot = np.load(ROOT/"Data_MPC/robot_data.npz")
 time = data_robot['ts']
 robot_q = data_robot['qs']
 robot_dq = data_robot['qs_t']
@@ -14,8 +16,6 @@ robot_ddq = data_robot['qs_tt']
 robot_u = data_robot['us']
 
 print (time.shape,robot_q.shape , robot_ddq.shape , robot_u.shape)
-
-
 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%   
@@ -37,7 +37,7 @@ for i in range (4):
 
 # %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 N_total, T, _ = robot_q.shape
-labels = ["q1", "q2", "q3" , "q4"]
+labels = ["Dof1", "Dof2", "Dof3" , "Dof4"]
 
 idx = np.random.randint(0, N_total, size=20)
 
@@ -48,7 +48,7 @@ for d in range(4):
         plt.plot(time[i,:1500], robot_q[i, :, d], linewidth=1)
     plt.xlabel("time")
     plt.ylabel(f" {labels[d]}")
-    plt.title(f"robot_q states  ({labels[d]}), 20 rollouts")
+    plt.title(f" ({labels[d]}), 20 rollouts")
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.show()

@@ -1,5 +1,5 @@
 
-
+import jax
 from jax import numpy as jnp
 from jaxtyping import Array, PyTree
 import equinox as eqx
@@ -52,3 +52,29 @@ class Normalization(eqx.Module):
 
     def inverse_transform_taus(self, taus: Array):
         return taus / self.alpha_u + self.mean_u
+    
+
+    def normalize_state(self , y):
+        q_norm = self.transform_qs(y[...,:4])
+        dq_norm = self.transform_q_ts(y[...,4:])
+        return jnp.concatenate([q_norm, dq_norm])
+
+    def de_normalize_state(self , y_norm):
+        q = self.inverse_transform_qs(y_norm[...,:4])
+        dq = self.inverse_transform_q_ts(y_norm[...,4:])
+        return jnp.concatenate([q, dq])
+    
+
+
+    def normalize_reference(self , reference):
+        q_norm = jax.vmap(self.transform_qs)(reference[...,:4])
+        dq_norm = jax.vmap(self.transform_q_ts)(reference[...,4:])
+
+        return jnp.concatenate([q_norm, dq_norm],axis=-1)
+    
+
+    def de_normalize_reference(self ,reference_norm):
+        q = jax.vmap(self.inverse_transform_qs)(reference_norm[...,:4])
+        dq = jax.vmap(self.inverse_transform_q_ts)(reference_norm[...,:4])
+
+        return jnp.concatenate([q, dq],axis=-1)

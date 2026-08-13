@@ -3,8 +3,8 @@ from pathlib import Path
 import mujoco as mj
 import numpy as np
 import time
-from policies import CubicMP, ConstantMP, PiecewiseMP
-from mujoco_environment import MjEnvironment, MjViewer, Arm, Ball
+from mpc_robot.datagen.policies import CubicMP, ConstantMP, PiecewiseMP
+from mpc_robot.datagen.mujoco_environment import MjEnvironment, MjViewer, Arm, Ball
 import matplotlib.pyplot as plt
 from dynax import bandlimited_noise
 import jax.random as jr
